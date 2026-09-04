@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.platformio
+          key: pio-${{ hashFiles('platformio.ini') }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Read Version From platformio.ini
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(grep -E '^custom_app_version\s*=' platformio.ini | head -n 1 | cut -d'=' -f2 | tr -d '[:space:]')"
+
+          if [[ -z "$version" ]]; then
+            echo "platformio.ini env:photopainter.custom_app_version is empty" >&2
+            exit 1
+          fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid custom_app_version '$version' in platformio.ini (expected x.y.z)" >&2
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Using version: $version"
+
+      - name: Build
+        run: pio run
+
+      - name: Generate Release Notes
+        shell: bash
+        env:
+          RELEASE_TAG: v${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          git fetch --force --tags origin
+
+          previous_tag="$(git tag --list 'v*' --sort=-v:refname \
+            | awk -v current="$RELEASE_TAG" '
+                $0 ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/ && $0 != current {
+                  print
+                  exit
+                }
+              ')"
+
+          if [[ -z "$previous_tag" ]]; then
+            echo "No previous stable release tag found; GitHub will generate notes from repository history."
+          else
+            echo "Using previous stable release tag: $previous_tag"
+          fi
+
+          python scripts/generate_release_notes.py \
+            --current-tag "$RELEASE_TAG" \
+            --previous-tag "$previous_tag" \
+            --output release-notes.md \
+            --title "$RELEASE_TAG"
+
+      - name: Prepare Device Asset
+        run: |
+          mkdir -p dist
+          cp .pio/build/photopainter/firmware.bin dist/photopainter.bin
+          cp .pio/build/photopainter/firmware.factory.bin dist/photopainter.factory.bin
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          body_path: release-notes.md
+          files: |
+            dist/photopainter.bin
+            dist/photopainter.factory.bin

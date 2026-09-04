@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f2efe6" />
+    <meta
+      name="description"
+      content="Install TRMNL firmware on a Waveshare ESP32-S3 PhotoPainter directly from a supported browser."
+    />
+    <title>TRMNL for PhotoPainter - Web Installer</title>
+    <link rel="preconnect" href="https://unpkg.com" />
+    <link rel="stylesheet" href="styles.css" />
+    <script type="module" src="installer.js"></script>
+    <script
+      type="module"
+      src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"
+    ></script>
+  </head>
+  <body>
+    <main>
+      <header class="masthead">
+        <a
+          class="wordmark"
+          href="https://github.com/paveldn/trmnl-PhotoPainter"
+          aria-label="TRMNL PhotoPainter repository"
+        >
+          TRMNL <span>/</span> PHOTOPAINTER
+        </a>
+        <span class="status"><i aria-hidden="true"></i> WEB FLASHER</span>
+      </header>
+
+      <section class="hero" aria-labelledby="page-title">
+        <div class="hero-copy">
+          <div class="eyebrow">PHOTOPAINTER FIRMWARE INSTALLER</div>
+          <h1 id="page-title">Turn your PhotoPainter into a TRMNL display.</h1>
+          <p class="lede">
+            Connect over USB, flash from this page, then finish setup over the
+            device's temporary Wi-Fi network.
+          </p>
+          <nav class="hero-links" aria-label="Learn more">
+            <a href="https://github.com/paveldn/trmnl-PhotoPainter#readme">
+              View the project README
+            </a>
+            <a href="https://www.waveshare.com/esp32-s3-photopainter.htm?sku=32408">
+              Waveshare PhotoPainter
+            </a>
+            <a href="https://trmnl.com/">New to TRMNL? Start here</a>
+          </nav>
+        </div>
+
+        <div class="installer-panel">
+          <div class="device-check">
+            <span class="device-icon" aria-hidden="true"></span>
+            <div class="device-details">
+              <strong>Target device</strong>
+              <span class="device-model">Waveshare ESP32-S3 PhotoPainter</span>
+              <div class="firmware-version">
+                <span>Version to install</span>
+                <output id="firmware-version" aria-live="polite">
+                  Loading version...
+                </output>
+              </div>
+            </div>
+          </div>
+
+          <div id="model-compatibility" class="model-warning" role="note">
+            <strong>Check your model before installing</strong>
+            <p>
+              This firmware is only for the Waveshare ESP32-S3 PhotoPainter
+              with the 800x480 six-color e-paper panel.
+            </p>
+          </div>
+
+          <esp-web-install-button manifest="manifest.json">
+            <button
+              class="install-button"
+              slot="activate"
+              type="button"
+              aria-describedby="model-compatibility"
+            >
+              Connect &amp; install
+            </button>
+            <p class="browser-warning" slot="unsupported">
+              Open this page in desktop Chrome or Edge to use Web Serial.
+            </p>
+            <p class="browser-warning" slot="not-allowed">
+              Browser access to the serial port was blocked. Reload the page
+              and allow the connection when prompted.
+            </p>
+          </esp-web-install-button>
+
+          <p class="safety-note">
+            Keep the USB cable connected until installation completes.
+          </p>
+        </div>
+      </section>
+
+      <section class="steps" aria-labelledby="steps-title">
+        <div class="section-heading">
+          <span>QUICK START</span>
+          <h2 id="steps-title">Flash, configure, then let it sleep.</h2>
+        </div>
+
+        <ol>
+          <li>
+            <span class="number">01</span>
+            <div>
+              <h3>Connect</h3>
+              <p>
+                Use a data-capable USB-C cable, power on the PhotoPainter, and
+                close any serial monitor using the port.
+              </p>
+            </div>
+          </li>
+          <li>
+            <span class="number">02</span>
+            <div>
+              <h3>Install</h3>
+              <p>
+                Select <em>Connect &amp; install</em>, choose the ESP32-S3
+                serial port, and follow the prompts.
+              </p>
+            </div>
+          </li>
+          <li>
+            <span class="number">03</span>
+            <div>
+              <h3>Configure</h3>
+              <p>
+                Join the <code>PhotoPainter-TRMNL</code> Wi-Fi network and
+                enter Wi-Fi and TRMNL server details.
+              </p>
+            </div>
+          </li>
+        </ol>
+      </section>
+
+      <footer>
+        <div class="project-credit">
+          <p>Open-source firmware for the Waveshare ESP32-S3 PhotoPainter.</p>
+          <p>
+            PhotoPainter adaptation by
+            <a href="https://github.com/paveldn" rel="author">Pavlo Dudnytskyi</a>
+            for the
+            <a href="https://github.com/usetrmnl/firmware">TRMNL firmware</a>
+            ecosystem.
+          </p>
+        </div>
+        <a href="https://github.com/paveldn/trmnl-PhotoPainter">
+          View source &amp; documentation
+        </a>
+      </footer>
+    </main>
+  </body>
+</html>

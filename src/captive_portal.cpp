@@ -1,0 +1,421 @@
+#include "captive_portal.h"
+
+#include <WiFi.h>
+#include <WebServer.h>
+#include <DNSServer.h>
+#include <ArduinoJson.h>
+#include <Preferences.h>
+
+#include <algorithm>
+#include <vector>
+
+// ─────────────────────────── External references ───────────────────────────
+extern String configuredSSID;
+extern String configuredPass;
+extern String apiKey;
+extern String apiBaseUrl;
+extern String friendlyId;
+extern bool otaEnabled;
+extern bool otaBetaMode;
+
+extern void saveWiFiSettings(const String& ssid, const String& pass);
+extern void saveServerSettings(const String& key, const String& url);
+extern void saveOtaEnabled(bool enabled);
+extern void saveOtaBetaMode(bool enabled);
+extern void clearAllSettings();
+extern void showSetupScreen(const String& message);
+extern void goToDeepSleep(int seconds);
+
+extern const char* FW_VERSION_STR;
+extern int DEFAULT_REFRESH_RATE_VAL;
+extern int WIFI_AP_TIMEOUT_VAL;
+extern const char* DEFAULT_API_BASE_URL_STR;
+
+// ─────────────────────────── Local state ───────────────────────────
+static WebServer webServer(80);
+static DNSServer dnsServer;
+static bool portalActive = false;
+static String wifiNetworkOptionsHtml;
+
+static const int DNS_PORT = 53;
+
+static bool isZeroMac(const String& mac) {
+  return mac == "00:00:00:00:00:00";
+}
+
+static String getPortalMacAddress() {
+  String mac = WiFi.macAddress();
+  if (!isZeroMac(mac) && mac.length() > 0) {
+    return mac;
+  }
+
+  mac = WiFi.softAPmacAddress();
+  if (!isZeroMac(mac) && mac.length() > 0) {
+    return mac;
+  }
+
+  uint64_t chipMac = ESP.getEfuseMac();
+  char buf[18];
+  snprintf(buf,
+           sizeof(buf),
+           "%02X:%02X:%02X:%02X:%02X:%02X",
+           (uint8_t)(chipMac >> 40),
+           (uint8_t)(chipMac >> 32),
+           (uint8_t)(chipMac >> 24),
+           (uint8_t)(chipMac >> 16),
+           (uint8_t)(chipMac >> 8),
+           (uint8_t)chipMac);
+  return String(buf);
+}
+
+static String escapeHtml(const String& value) {
+  String escaped;
+  escaped.reserve(value.length() + 8);
+  for (size_t i = 0; i < value.length(); ++i) {
+    char c = value[i];
+    switch (c) {
+      case '&': escaped += F("&amp;"); break;
+      case '<': escaped += F("&lt;"); break;
+      case '>': escaped += F("&gt;"); break;
+      case '"': escaped += F("&quot;"); break;
+      case '\'': escaped += F("&#39;"); break;
+      default: escaped += c; break;
+    }
+  }
+  return escaped;
+}
+
+struct WifiNetworkOption {
+  String ssid;
+  int32_t rssi;
+};
+
+static void refreshWifiNetworkOptions() {
+  wifiNetworkOptionsHtml =
+      F("<option value=\"__manual__\">Enter network manually</option>");
+
+  WiFi.scanDelete();
+  int networkCount = WiFi.scanNetworks();
+  if (networkCount <= 0) {
+    wifiNetworkOptionsHtml +=
+        F("<option value=\"\" disabled>No WiFi networks found</option>");
+    return;
+  }
+
+  std::vector<WifiNetworkOption> networks;
+  networks.reserve(networkCount);
+
+  for (int i = 0; i < networkCount; ++i) {
+    String ssid = WiFi.SSID(i);
+    if (ssid.length() == 0) {
+      continue;
+    }
+
+    int32_t rssi = WiFi.RSSI(i);
+    bool merged = false;
+    for (auto& network : networks) {
+      if (network.ssid == ssid) {
+        if (rssi > network.rssi) {
+          network.rssi = rssi;
+        }
+        merged = true;
+        break;
+      }
+    }
+
+    if (!merged) {
+      networks.push_back({ssid, rssi});
+    }
+  }
+
+  std::sort(networks.begin(), networks.end(), [](const WifiNetworkOption& left, const WifiNetworkOption& right) {
+    if (left.rssi != right.rssi) {
+      return left.rssi > right.rssi;
+    }
+    return left.ssid < right.ssid;
+  });
+
+  for (const auto& network : networks) {
+    wifiNetworkOptionsHtml +=
+        "<option value=\"" + escapeHtml(network.ssid) + "\">" +
+        escapeHtml(network.ssid) + " (" + String(network.rssi) + " dBm)</option>";
+  }
+}
+
+// ─────────────────────────── HTML ───────────────────────────
+static const char PORTAL_HTML[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PhotoPainter TRMNL Setup</title>
+<style>
+body{font-family:-apple-system,sans-serif;margin:0;padding:20px;background:#f5f5f5}
+.container{max-width:400px;margin:0 auto;background:#fff;padding:24px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,0.1)}
+h1{font-size:1.4em;margin:0 0 4px;color:#333}
+h2{font-size:0.9em;font-weight:normal;color:#666;margin:0 0 20px}
+label{display:block;margin:12px 0 4px;font-weight:500;font-size:0.9em;color:#333}
+input,select{width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:1em;box-sizing:border-box}
+input:focus{outline:none;border-color:#4a90d9}
+button{width:100%;padding:12px;background:#333;color:#fff;border:none;border-radius:6px;font-size:1em;cursor:pointer;margin-top:16px}
+button:hover{background:#555}
+.section{border-top:1px solid #eee;margin-top:20px;padding-top:16px}
+.info{font-size:0.8em;color:#888;margin-top:4px}
+.status{padding:8px;border-radius:4px;margin-top:12px;display:none}
+.success{background:#d4edda;color:#155724;display:block}
+.error{background:#f8d7da;color:#721c24;display:block}
+select{appearance:auto}
+.btn-reset{background:#dc3545;margin-top:8px}
+.btn-reset:hover{background:#c82333}
+</style>
+</head>
+<body>
+<div class="container">
+<h1>PhotoPainter TRMNL</h1>
+<h2>Device Configuration</h2>
+<form id="configForm">
+<label for="ssid">WiFi Network</label>
+<select id="ssidSelect" name="ssidSelect" onchange="toggleManualSsid()" required>
+%SSID_OPTIONS%
+</select>
+<input type="text" id="ssidManual" name="ssid" placeholder="Network name" style="margin-top:8px;display:none">
+<label for="pass">WiFi Password</label>
+<input type="password" id="pass" name="pass" placeholder="Password">
+<div class="section">
+<label for="server">TRMNL Server</label>
+<select id="server" name="server" onchange="toggleCustomUrl()">
+<option value="official">Official (trmnl.app)</option>
+<option value="custom">Custom / Local Server</option>
+</select>
+<div id="customUrlDiv" style="display:none">
+<label for="url">Server URL</label>
+<input type="url" id="url" name="url" placeholder="http://192.168.1.100:8080">
+<p class="info">Full base URL of your local TRMNL-compatible server</p>
+</div>
+</div>
+<div class="section">
+<label for="apikey">API Key (Access Token)</label>
+<input type="text" id="apikey" name="apikey" placeholder="Optional - or use auto-registration">
+<p class="info">Leave empty to use MAC-based auto-registration, or paste your TRMNL API key</p>
+</div>
+<div class="section">
+<label for="ota_enabled">OTA Firmware Update</label>
+<label style="display:flex;align-items:center;gap:8px;font-weight:normal;margin-top:6px">
+<input type="checkbox" id="ota_enabled" name="ota_enabled" style="width:auto" checked onchange="updateOtaControls()">
+Enable OTA firmware updates
+</label>
+</div>
+<div class="section">
+<label for="ota_beta">Firmware Channel</label>
+<label style="display:flex;align-items:center;gap:8px;font-weight:normal;margin-top:6px">
+<input type="checkbox" id="ota_beta" name="ota_beta" style="width:auto">
+Use beta OTA channel (prereleases)
+</label>
+</div>
+<button type="submit">Save & Connect</button>
+</form>
+<div id="status" class="status"></div>
+<div class="section">
+<button class="btn-reset" onclick="resetDevice()">Factory Reset</button>
+<p class="info">MAC: <strong>%MAC%</strong><br>FW: %FW%<br>
+Hold button >5s after wake to return to this setup.</p>
+</div>
+</div>
+<script>
+function toggleCustomUrl(){
+  document.getElementById('customUrlDiv').style.display=
+    document.getElementById('server').value==='custom'?'block':'none';
+}
+function toggleManualSsid(){
+  var select=document.getElementById('ssidSelect');
+  var manual=document.getElementById('ssidManual');
+  var isManual=select.value==='__manual__';
+  manual.style.display=isManual?'block':'none';
+  manual.required=isManual;
+  if(!isManual){
+    manual.value=select.value;
+  }
+}
+function updateOtaControls(){
+  var otaEnabled=document.getElementById('ota_enabled').checked;
+  var beta=document.getElementById('ota_beta');
+  beta.disabled=!otaEnabled;
+  if(!otaEnabled){
+    beta.checked=false;
+  }
+}
+document.getElementById('configForm').addEventListener('submit',function(e){
+  e.preventDefault();
+  var st=document.getElementById('status');
+  st.className='status';st.style.display='none';
+  var select=document.getElementById('ssidSelect');
+  var manual=document.getElementById('ssidManual');
+  var ssidValue=select.value==='__manual__'?manual.value:select.value;
+  var data={
+    ssid:ssidValue,
+    pass:document.getElementById('pass').value,
+    url:document.getElementById('server').value==='custom'?document.getElementById('url').value:'https://trmnl.app',
+    apikey:document.getElementById('apikey').value,
+    ota_enabled:document.getElementById('ota_enabled').checked,
+    ota_beta:document.getElementById('ota_beta').checked
+  };
+  fetch('/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)})
+  .then(r=>r.json()).then(d=>{
+    if(d.success){st.className='status success';st.textContent='Saved! Device will restart...';}
+    else{st.className='status error';st.textContent='Error: '+d.message;}
+  }).catch(()=>{st.className='status error';st.textContent='Connection error';});
+});
+function resetDevice(){
+  if(confirm('Reset all settings? Device will restart in setup mode.')){
+    fetch('/save',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({reset:true})}).then(()=>{location.reload();});
+  }
+}
+
+toggleManualSsid();
+
+fetch('/status').then(r=>r.json()).then(s=>{
+  document.getElementById('ota_enabled').checked=(s.ota_enabled!==false);
+  document.getElementById('ota_beta').checked=!!s.ota_beta;
+  updateOtaControls();
+}).catch(()=>{});
+
+updateOtaControls();
+</script>
+</body>
+</html>
+)rawliteral";
+
+// ─────────────────────────── Handlers ───────────────────────────
+static void handlePortalRoot() {
+  String html = String(PORTAL_HTML);
+  html.replace("%MAC%", getPortalMacAddress());
+  html.replace("%FW%", FW_VERSION_STR);
+  html.replace("%SSID_OPTIONS%", wifiNetworkOptionsHtml);
+  webServer.send(200, "text/html", html);
+}
+
+static void handlePortalSave() {
+  if (!webServer.hasArg("plain")) {
+    webServer.send(400, "application/json", "{\"success\":false,\"message\":\"No data\"}");
+    return;
+  }
+
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, webServer.arg("plain"));
+  if (err) {
+    webServer.send(400, "application/json", "{\"success\":false,\"message\":\"Invalid JSON\"}");
+    return;
+  }
+
+  // Handle factory reset
+  bool reset = doc["reset"] | false;
+  if (reset) {
+    clearAllSettings();
+    webServer.send(200, "application/json", "{\"success\":true}");
+    delay(500);
+    ESP.restart();
+    return;
+  }
+
+  String ssid = doc["ssid"] | "";
+  String pass = doc["pass"] | "";
+  String url = doc["url"] | DEFAULT_API_BASE_URL_STR;
+  String key = doc["apikey"] | "";
+  bool otaEnable = doc["ota_enabled"] | true;
+  bool otaBeta = doc["ota_beta"] | false;
+  if (!otaEnable) {
+    otaBeta = false;
+  }
+
+  if (ssid.length() == 0) {
+    webServer.send(400, "application/json", "{\"success\":false,\"message\":\"SSID required\"}");
+    return;
+  }
+
+  // Sanitize URL - remove trailing slash
+  if (url.length() > 0 && url.endsWith("/")) {
+    url = url.substring(0, url.length() - 1);
+  }
+
+  saveWiFiSettings(ssid, pass);
+  saveServerSettings(key, url);
+  saveOtaEnabled(otaEnable);
+  saveOtaBetaMode(otaBeta);
+
+  webServer.send(200, "application/json", "{\"success\":true}");
+
+  delay(1000);
+  portalActive = false;
+  ESP.restart();
+}
+
+static void handlePortalStatus() {
+  JsonDocument doc;
+  doc["configured"] = (configuredSSID.length() > 0);
+  doc["mac"] = getPortalMacAddress();
+  doc["fw"] = FW_VERSION_STR;
+  doc["friendly_id"] = friendlyId;
+  doc["ota_enabled"] = otaEnabled;
+  doc["ota_beta"] = otaBetaMode;
+
+  String json;
+  serializeJson(doc, json);
+  webServer.send(200, "application/json", json);
+}
+
+static void handleNotFound() {
+  // Redirect all unknown requests to portal (captive portal behavior)
+  webServer.sendHeader("Location", "http://192.168.4.1/");
+  webServer.send(302, "text/plain", "");
+}
+
+// ─────────────────────────── Public API ───────────────────────────
+void startCaptivePortal() {
+#ifdef DEBUG_LOGS
+  Serial.println("Starting captive portal...");
+#endif
+
+  showSetupScreen("Connect to WiFi:\nPhotoPainter-TRMNL\nThen open: 192.168.4.1");
+
+  // Start AP
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP("PhotoPainter-TRMNL", "");  // Open network for easy setup
+  delay(100);
+
+  refreshWifiNetworkOptions();
+
+#ifdef DEBUG_LOGS
+  Serial.printf("AP IP: %s\n", WiFi.softAPIP().toString().c_str());
+#endif
+
+  // DNS server to redirect all domains to our IP (captive portal)
+  dnsServer.start(DNS_PORT, "*", WiFi.softAPIP());
+
+  // Web server routes
+  webServer.on("/", HTTP_GET, handlePortalRoot);
+  webServer.on("/save", HTTP_POST, handlePortalSave);
+  webServer.on("/status", HTTP_GET, handlePortalStatus);
+  webServer.onNotFound(handleNotFound);
+  webServer.begin();
+
+  portalActive = true;
+
+  // Run portal for up to WIFI_AP_TIMEOUT seconds
+  unsigned long portalStart = millis();
+  while (portalActive) {
+    dnsServer.processNextRequest();
+    webServer.handleClient();
+    delay(10);
+
+    if (millis() - portalStart > (unsigned long)WIFI_AP_TIMEOUT_VAL * 1000) {
+#ifdef DEBUG_LOGS
+      Serial.println("Portal timeout - going to sleep");
+#endif
+      webServer.stop();
+      WiFi.softAPdisconnect(true);
+      goToDeepSleep(DEFAULT_REFRESH_RATE_VAL);
+      return;
+    }
+  }
+}

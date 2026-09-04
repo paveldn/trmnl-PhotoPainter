@@ -1,0 +1,132 @@
+name: Prerelease
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: prerelease
+  cancel-in-progress: false
+
+jobs:
+  prerelease:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.platformio
+          key: pio-${{ hashFiles('platformio.ini') }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Read Base Version From platformio.ini
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_version="$(grep -E '^custom_app_version\s*=' platformio.ini | head -n 1 | cut -d'=' -f2 | tr -d '[:space:]')"
+
+          if [[ -z "$base_version" ]]; then
+            echo "platformio.ini env:photopainter.custom_app_version is empty" >&2
+            exit 1
+          fi
+          if [[ ! "$base_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid custom_app_version '$base_version' in platformio.ini (expected x.y.z)" >&2
+            exit 1
+          fi
+
+          echo "base_version=$base_version" >> "$GITHUB_OUTPUT"
+          echo "Using base version: $base_version"
+
+      - name: Compute Prerelease Name
+        id: naming
+        shell: bash
+        env:
+          BASE_VERSION: ${{ steps.base.outputs.base_version }}
+        run: |
+          set -euo pipefail
+
+          next=1
+          escaped_base="${BASE_VERSION//./\\.}"
+          while read -r _ ref; do
+            tag="${ref#refs/tags/}"
+            if [[ "$tag" =~ ^v${escaped_base}-beta\.([0-9]+)$ ]]; then
+              n="${BASH_REMATCH[1]}"
+              if (( n >= next )); then
+                next=$((n + 1))
+              fi
+            fi
+          done < <(git ls-remote --tags --refs origin "refs/tags/v${BASE_VERSION}-beta.*")
+
+          tag_name="v${BASE_VERSION}-beta.${next}"
+          release_name="v${BASE_VERSION} beta ${next}"
+          firmware_version="${BASE_VERSION}-beta.${next}"
+
+          echo "tag_name=${tag_name}" >> "$GITHUB_OUTPUT"
+          echo "release_name=${release_name}" >> "$GITHUB_OUTPUT"
+          echo "firmware_version=${firmware_version}" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: |
+          sed -i -E "s/^custom_app_version\s*=\s*.*/custom_app_version = ${{ steps.naming.outputs.firmware_version }}/" platformio.ini
+          grep -E '^custom_app_version\s*=' platformio.ini
+          pio run
+
+      - name: Generate Prerelease Notes
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.naming.outputs.tag_name }}
+          RELEASE_NAME: ${{ steps.naming.outputs.release_name }}
+        run: |
+          set -euo pipefail
+
+          git fetch --force --tags origin
+
+          previous_tag="$(git tag --list 'v*' --sort=-v:refname \
+            | awk -v current="$RELEASE_TAG" '
+                $0 ~ /^v[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$/ && $0 != current {
+                  print
+                  exit
+                }
+              ')"
+
+          if [[ -z "$previous_tag" ]]; then
+            echo "No previous tag found; GitHub will generate notes from repository history."
+          else
+            echo "Using previous tag: $previous_tag"
+          fi
+
+          python scripts/generate_release_notes.py \
+            --current-tag "$RELEASE_TAG" \
+            --previous-tag "$previous_tag" \
+            --output release-notes.md \
+            --title "$RELEASE_NAME"
+
+      - name: Prepare Device Asset
+        run: |
+          mkdir -p dist
+          cp .pio/build/photopainter/firmware.bin dist/photopainter.bin
+          cp .pio/build/photopainter/firmware.factory.bin dist/photopainter.factory.bin
+
+      - name: Create Prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.naming.outputs.tag_name }}
+          name: ${{ steps.naming.outputs.release_name }}
+          prerelease: true
+          body_path: release-notes.md
+          files: |
+            dist/photopainter.bin
+            dist/photopainter.factory.bin
