@@ -11,11 +11,28 @@
 #include <cmath>
 
 #include "display.h"
+#include "button.h"
 #include "hardware.h"
 
 static constexpr float LOW_BATTERY_VOLTAGE = 3.4f;
 static XPowersPMU pmu;
 static bool pmuReady = false;
+
+static void stopPmuMeasurements() {
+  if (!pmuReady) return;
+
+  pmu.disableBattVoltageMeasure();
+  pmu.disableVbusVoltageMeasure();
+  pmu.disableBattDetection();
+}
+
+static void holdSleepGpios() {
+  digitalWrite(LED_RED_PIN, HIGH);
+  digitalWrite(LED_GREEN_PIN, HIGH);
+  gpio_hold_en(static_cast<gpio_num_t>(LED_RED_PIN));
+  gpio_hold_en(static_cast<gpio_num_t>(LED_GREEN_PIN));
+  gpio_deep_sleep_hold_en();
+}
 
 extern unsigned long startupMillis;
 extern int lastWakeTime;
@@ -24,6 +41,10 @@ extern void sendLogs();
 extern void invalidateImageCache(const char* reason);
 
 void initPower() {
+  gpio_deep_sleep_hold_dis();
+  gpio_hold_dis(static_cast<gpio_num_t>(LED_RED_PIN));
+  gpio_hold_dis(static_cast<gpio_num_t>(LED_GREEN_PIN));
+
   pinMode(LED_RED_PIN, OUTPUT);
   pinMode(LED_GREEN_PIN, OUTPUT);
   digitalWrite(LED_RED_PIN, HIGH);
@@ -40,6 +61,10 @@ void initPower() {
   pmu.enableALDO3();
   pmu.setALDO4Voltage(3300);
   pmu.enableALDO4();
+  pmu.setVbusCurrentLimit(XPOWERS_AXP2101_VBUS_CUR_LIM_2000MA);
+  pmu.setPrechargeCurr(XPOWERS_AXP2101_PRECHARGE_50MA);
+  pmu.setChargerConstantCurr(XPOWERS_AXP2101_CHG_CUR_500MA);
+  pmu.setChargerTerminationCurr(XPOWERS_AXP2101_CHG_ITERM_25MA);
   pmu.enableBattVoltageMeasure();
   pmu.enableVbusVoltageMeasure();
   pmu.enableBattDetection();
@@ -71,12 +96,19 @@ float getBatteryVoltage() {
 
 bool isExternalPowerPresent() {
   if (!pmuReady) return false;
-  return pmu.getVbusVoltage() > 4000;
+  if (pmu.isVbusIn() || pmu.isVbusGood()) return true;
+
+  int aboveThreshold = 0;
+  for (int i = 0; i < 3; ++i) {
+    if (pmu.getVbusVoltage() > 4000) ++aboveThreshold;
+    if (i < 2) delay(5);
+  }
+  return aboveThreshold >= 2;
 }
 
 bool isBatteryCharging() {
   if (!pmuReady) return false;
-  return pmu.isCharging();
+  return pmu.isBatteryConnect() && pmu.isCharging();
 }
 
 void showLowBatteryAndShutdown() {
@@ -95,7 +127,11 @@ void showLowBatteryAndShutdown() {
   sendLogs();
   Serial.flush();
   display.sleep();
+  stopPmuMeasurements();
+  Wire.end();
+  holdSleepGpios();
   delay(100);
+  esp_sleep_pd_config(ESP_PD_DOMAIN_MAX, ESP_PD_OPTION_AUTO);
   esp_deep_sleep_start();
 }
 
@@ -110,11 +146,39 @@ void goToDeepSleep(int seconds) {
   if (WiFi.getMode() != WIFI_OFF) {
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
-    esp_wifi_stop();
     delay(10);
   }
 
   display.sleep();
-  esp_sleep_enable_ext1_wakeup((1ULL << BUTTON_BOOT_PIN), ESP_EXT1_WAKEUP_ANY_LOW);
+
+  // Keep native USB alive on external power so esptool can reset the device
+  // into its ROM loader without the PhotoPainter's BOOT/PWR button sequence.
+  if (isExternalPowerPresent()) {
+    deviceLog("USB power: staying available for flashing\n");
+    int remaining = seconds;
+    while (remaining > 0 && isExternalPowerPresent()) {
+      for (int i = 0; i < 20; ++i) {
+        checkRuntimeButtons();
+        delay(50);
+      }
+      --remaining;
+    }
+    if (isExternalPowerPresent()) {
+      ESP.restart();
+    }
+    seconds = max(remaining, 16);
+    deviceLog("USB removed: sleeping for %d seconds\n", seconds);
+  }
+
+  stopPmuMeasurements();
+  Wire.end();
+  holdSleepGpios();
+  esp_sleep_pd_config(ESP_PD_DOMAIN_MAX, ESP_PD_OPTION_AUTO);
+  pinMode(BUTTON_BOOT_PIN, INPUT_PULLUP);
+  pinMode(BUTTON_KEY_PIN, INPUT_PULLUP);
+  pinMode(BUTTON_PWR_PIN, INPUT_PULLUP);
+  constexpr uint64_t buttonWakeMask =
+      (1ULL << BUTTON_BOOT_PIN) | (1ULL << BUTTON_KEY_PIN) | (1ULL << BUTTON_PWR_PIN);
+  esp_sleep_enable_ext1_wakeup(buttonWakeMask, ESP_EXT1_WAKEUP_ANY_LOW);
   esp_deep_sleep(static_cast<uint64_t>(seconds) * 1000000ULL);
 }

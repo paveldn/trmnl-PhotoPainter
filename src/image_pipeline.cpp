@@ -1,5 +1,6 @@
 #include "image_pipeline.h"
 
+#include <algorithm>
 #include <HTTPClient.h>
 #include <PNGdec.h>
 #undef INTELSHORT
@@ -16,16 +17,19 @@
 #include "trmnl_keys.h"
 
 static constexpr int MAX_IMAGE_SIZE = 1200000;
+static constexpr uint32_t IMAGE_READ_TIMEOUT_MS = 30000;
 static bool imageFramebufferChanged = false;
 static String imageDisplayError;
 static PNG pngDecoder;
 static JPEGDEC jpegDecoder;
 static int imageXOffset = 0;
 static int imageYOffset = 0;
+static uint16_t pngLinePixels[DISPLAY_WIDTH];
 
 extern Preferences prefs;
 extern String apiBaseUrl;
 extern String apiKey;
+extern bool imageContentValid;
 
 extern void deviceLog(const char* fmt, ...);
 extern void disableWiFiPS();
@@ -98,17 +102,32 @@ static void drawRgb565Pixel(int x, int y, uint16_t pixel) {
 }
 
 static int drawPngLine(PNGDRAW* draw) {
-  uint16_t pixels[DISPLAY_WIDTH];
   if (draw->iWidth > DISPLAY_WIDTH) return 0;
 
-  pngDecoder.getLineAsRGB565(draw, pixels, PNG_RGB565_LITTLE_ENDIAN, 0xFFFFFFFF);
+  std::fill_n(pngLinePixels, draw->iWidth, 0xFFFF);
+  if (draw->iPixelType == PNG_PIXEL_GRAYSCALE &&
+      (draw->iBpp == 2 || draw->iBpp == 4)) {
+    const uint8_t maxValue = (1U << draw->iBpp) - 1U;
+    for (int x = 0; x < draw->iWidth; ++x) {
+      int bitOffset = x * draw->iBpp;
+      int shift = 8 - draw->iBpp - (bitOffset & 7);
+      uint8_t value = (draw->pPixels[bitOffset >> 3] >> shift) & maxValue;
+      uint8_t gray = static_cast<uint8_t>(value * 255U / maxValue);
+      pngLinePixels[x] = static_cast<uint16_t>((gray >> 3) |
+                                               ((gray >> 2) << 5) |
+                                               ((gray >> 3) << 11));
+    }
+  } else {
+    pngDecoder.getLineAsRGB565(
+        draw, pngLinePixels, PNG_RGB565_LITTLE_ENDIAN, 0xFFFFFFFF);
+  }
   int dstY = draw->y + imageYOffset;
   if (dstY < 0 || dstY >= DISPLAY_HEIGHT) return 1;
 
   for (int x = 0; x < draw->iWidth; ++x) {
     int dstX = x + imageXOffset;
     if (dstX >= 0 && dstX < DISPLAY_WIDTH) {
-      drawRgb565Pixel(dstX, dstY, pixels[x]);
+      drawRgb565Pixel(dstX, dstY, pngLinePixels[x]);
     }
   }
   return 1;
@@ -283,6 +302,7 @@ bool displayImage(const char* imageUrl) {
   if (downloadAndDisplayImage(imageUrl)) {
     if (imageFramebufferChanged) {
       display.refresh();
+      imageContentValid = true;
       deviceLog("Display done\n");
     } else {
       deviceLog("Image unchanged\n");
@@ -303,6 +323,10 @@ bool downloadAndDisplayImage(const char* url) {
   HTTPClient http;
   String sUrl = String(url);
   http.begin(sUrl);
+  static const char* responseHeaders[] = {"Content-Type", "ETag", "Last-Modified"};
+  http.collectHeaders(responseHeaders, 3);
+  http.addHeader("Accept", "image/png,image/jpeg,image/bmp,*/*;q=0.1");
+  http.addHeader("Accept-Encoding", "identity");
   if (sUrl.startsWith(apiBaseUrl)) {
     addAuthHeaders(http, WiFi.macAddress(), apiKey);
   }
@@ -352,10 +376,38 @@ bool downloadAndDisplayImage(const char* url) {
   }
 
   WiFiClient* stream = http.getStreamPtr();
-  size_t bytesRead = stream->readBytes(buffer, len);
+  size_t bytesRead = 0;
+  uint32_t lastDataAt = millis();
+  while (bytesRead < static_cast<size_t>(len) &&
+         millis() - lastDataAt < IMAGE_READ_TIMEOUT_MS) {
+    size_t available = stream->available();
+    if (available > 0) {
+      size_t remaining = static_cast<size_t>(len) - bytesRead;
+      size_t chunk = available < remaining ? available : remaining;
+      int received = stream->read(buffer + bytesRead, chunk);
+      if (received > 0) {
+        bytesRead += static_cast<size_t>(received);
+        lastDataAt = millis();
+      }
+    } else if (!stream->connected()) {
+      break;
+    } else {
+      delay(1);
+    }
+  }
   String respEtag = http.header("ETag");
   String respLast = http.header("Last-Modified");
+  String contentType = http.header("Content-Type");
   http.end();
+
+  deviceLog("Image response: %u/%d bytes, type=%s\n",
+            static_cast<unsigned>(bytesRead), len, contentType.c_str());
+  if (bytesRead != static_cast<size_t>(len)) {
+    deviceLog("Image download incomplete\n");
+    imageDisplayError = "Image download failed\nIncomplete response\nCheck WiFi signal";
+    free(buffer);
+    return false;
+  }
 
   bool success = false;
   if (bytesRead >= 2 && buffer[0] == 'B' && buffer[1] == 'M') {
@@ -381,9 +433,10 @@ bool downloadAndDisplayImage(const char* url) {
       imageDisplayError = "JPEG decode failed\nUse an 800x480 image\nCheck server output";
     }
   } else {
-    uint8_t first = bytesRead > 0 ? buffer[0] : 0;
-    uint8_t second = bytesRead > 1 ? buffer[1] : 0;
-    deviceLog("Unsupported image format: %02X %02X\n", first, second);
+    deviceLog("Unsupported image format: %02X %02X %02X %02X, type=%s\n",
+              bytesRead > 0 ? buffer[0] : 0, bytesRead > 1 ? buffer[1] : 0,
+              bytesRead > 2 ? buffer[2] : 0, bytesRead > 3 ? buffer[3] : 0,
+              contentType.c_str());
     imageDisplayError = "Image format error\nUse PNG, JPEG, or BMP\nCheck server output";
   }
 

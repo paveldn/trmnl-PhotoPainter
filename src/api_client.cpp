@@ -37,6 +37,7 @@ extern bool otaEnabled;
 extern bool otaBetaMode;
 extern bool forceOtaOnThisBoot;
 extern int lastWakeTime;
+extern bool imageContentValid;
 extern const char* FW_VERSION_STR;
 extern const char* UPDATE_SOURCE_STR;
 extern String specialFunction;
@@ -47,12 +48,13 @@ extern String logBuffer;
 #endif
 
 extern void deviceLog(const char* fmt, ...);
+extern void invalidateImageCache(const char* reason);
 extern void disableWiFiPS();
 extern void enableWiFiPS();
 extern void showErrorScreen(const String& message);
 extern void showSetupScreen(const String& message);
 extern void apiErrorSleep();
-extern void checkRuntimeReset();
+extern void checkRuntimeButtons();
 extern void goToDeepSleep(int seconds);
 
 static String wifiStatusString(wl_status_t status) {
@@ -251,6 +253,10 @@ void registerDevice() {
 void fetchAndDisplay(float batteryVoltage, bool specialFunctionActive) {
   deviceLog("GET /api/display...\n");
   disableWiFiPS();
+
+  if (!imageContentValid) {
+    invalidateImageCache("screen_content_not_valid");
+  }
   uint8_t batteryLevel = 0;
   if (batteryVoltage > 0.5f) {
     constexpr float BATTERY_FULL = 4.10f;
@@ -270,7 +276,7 @@ void fetchAndDisplay(float batteryVoltage, bool specialFunctionActive) {
 
   bool imageCached = false;
   prefs.begin(NVS_NAMESPACE, true);
-  if (prefs.isKey(KEY_LAST_FILENAME)) {
+  if (imageContentValid && prefs.isKey(KEY_LAST_FILENAME)) {
     imageCached = true;
   }
   prefs.end();
@@ -342,7 +348,7 @@ void fetchAndDisplay(float batteryVoltage, bool specialFunctionActive) {
     deviceLog("Status 202: plugin not attached\n");
     showSetupScreen("Waiting for setup\n\nID: " + friendlyId + "\nMAC: " + WiFi.macAddress());
     saveRefreshRate(SLEEP_NOT_CONNECTED);
-    checkRuntimeReset();
+    checkRuntimeButtons();
     goToDeepSleep(SLEEP_NOT_CONNECTED);
     return;
   }
@@ -357,7 +363,7 @@ void fetchAndDisplay(float batteryVoltage, bool specialFunctionActive) {
 
   if (status != 0) {
     deviceLog("API: unexpected status %d\n", status);
-    checkRuntimeReset();
+    checkRuntimeButtons();
     goToDeepSleep(refreshRate);
     return;
   }
@@ -445,7 +451,7 @@ void fetchAndDisplay(float batteryVoltage, bool specialFunctionActive) {
   // ── Check if image needs update ──
   if (!imageUrl || strlen(imageUrl) == 0) {
     deviceLog("No image_url — sleeping\n");
-    checkRuntimeReset();
+    checkRuntimeButtons();
     goToDeepSleep(refreshRate);
     return;
   }
@@ -478,7 +484,7 @@ void fetchAndDisplay(float batteryVoltage, bool specialFunctionActive) {
   }
 
   // Allow user to perform runtime resets by holding the wake button now.
-  checkRuntimeReset();
+  checkRuntimeButtons();
 
   goToDeepSleep(refreshRate);
 }

@@ -2,87 +2,79 @@
 
 #include <Arduino.h>
 #include <Preferences.h>
+#include <esp32-hal-tinyusb.h>
 
 #include "hardware.h"
 #include "trmnl_keys.h"
 
-static constexpr int BUTTON_MEDIUM_TIME = 1000;
-static constexpr int BUTTON_HOLD_TIME = 6000;
-static constexpr int BUTTON_FACTORY_RESET = 16000;
+static constexpr int BUTTON_HOLD_TIME = 5000;
+static constexpr int BUTTON_FACTORY_RESET = 15000;
 
 extern Preferences prefs;
+extern bool forceSpecialFunctionNextBoot;
 extern void deviceLog(const char* fmt, ...);
 extern void showErrorScreen(const String& message);
 extern void showSetupScreen(const String& message);
 
-bool handleBootButtonReset() {
-  pinMode(BUTTON_BOOT_PIN, INPUT_PULLUP);
-  if (digitalRead(BUTTON_BOOT_PIN) == LOW) {
-    deviceLog("Button held at boot\n");
-    unsigned long pressStart = millis();
-    while (digitalRead(BUTTON_BOOT_PIN) == LOW) {
-      if (millis() - pressStart > BUTTON_FACTORY_RESET) break;
-      delay(50);
-    }
-    unsigned long holdTime = millis() - pressStart;
+static void handleKeyPress(WakePress press, bool restartForClick) {
+  if (press == WakePress::LONGEST) {
+    prefs.begin(NVS_NAMESPACE, false);
+    prefs.clear();
+    prefs.end();
+    showErrorScreen("Factory Reset\n\nAll settings cleared\nRestarting...");
+    delay(1500);
+    ESP.restart();
+  }
 
-    if (holdTime >= BUTTON_FACTORY_RESET) {
-      prefs.begin(NVS_NAMESPACE, false);
-      prefs.clear();
-      prefs.end();
-      showErrorScreen("Factory Reset\n\nAll settings cleared\nRestarting...");
-      delay(2000);
-      ESP.restart();
-      return true;
-    }
+  if (press == WakePress::LONG) {
+    prefs.begin(NVS_NAMESPACE, false);
+    prefs.remove(KEY_WIFI_SSID);
+    prefs.remove(KEY_WIFI_PASS);
+    prefs.putInt(KEY_WIFI_RETRY_COUNT, 1);
+    prefs.end();
+    showSetupScreen("WiFi cleared\n\nRestarting...");
+    delay(1000);
+    ESP.restart();
+  }
 
-    if (holdTime >= BUTTON_HOLD_TIME) {
-      prefs.begin(NVS_NAMESPACE, false);
-      prefs.remove(KEY_WIFI_SSID);
-      prefs.remove(KEY_WIFI_PASS);
-      prefs.putInt(KEY_WIFI_RETRY_COUNT, 1);
-      prefs.end();
-    }
+  if (restartForClick) {
+    forceSpecialFunctionNextBoot = true;
+    ESP.restart();
+  }
+}
+
+void enterFlashMode() {
+  deviceLog("BOOT: entering ROM download mode\n");
+  Serial.flush();
+  delay(100);
+  usb_persist_restart(RESTART_BOOTLOADER);
+  while (true) delay(1000);
+}
+
+bool handleKeyButtonAtStartup() {
+  pinMode(BUTTON_KEY_PIN, INPUT_PULLUP);
+  if (digitalRead(BUTTON_KEY_PIN) == LOW) {
+    handleKeyPress(detectKeyButtonPress(), true);
+    return true;
   }
   return false;
 }
 
-void checkRuntimeReset() {
+void checkRuntimeButtons() {
   pinMode(BUTTON_BOOT_PIN, INPUT_PULLUP);
-  if (digitalRead(BUTTON_BOOT_PIN) == LOW) {
-    unsigned long start = millis();
-    while (digitalRead(BUTTON_BOOT_PIN) == LOW) {
-      unsigned long held = millis() - start;
-      if (held >= BUTTON_FACTORY_RESET) {
-        prefs.begin(NVS_NAMESPACE, false);
-        prefs.clear();
-        prefs.end();
-        showErrorScreen("Factory Reset\n\nAll settings cleared\nRestarting...");
-        delay(1500);
-        ESP.restart();
-        return;
-      }
-      delay(50);
-    }
-    if (millis() - start >= BUTTON_HOLD_TIME) {
-      prefs.begin(NVS_NAMESPACE, false);
-      prefs.remove(KEY_WIFI_SSID);
-      prefs.remove(KEY_WIFI_PASS);
-      prefs.putInt(KEY_WIFI_RETRY_COUNT, 1);
-      prefs.end();
-      showSetupScreen("WiFi cleared\n\nRestarting...");
-      delay(1000);
-      ESP.restart();
-    }
+  pinMode(BUTTON_KEY_PIN, INPUT_PULLUP);
+  if (digitalRead(BUTTON_BOOT_PIN) == LOW) enterFlashMode();
+  if (digitalRead(BUTTON_KEY_PIN) == LOW) {
+    handleKeyPress(detectKeyButtonPress(), true);
   }
 }
 
-WakePress detectButtonWakePress() {
-  pinMode(BUTTON_BOOT_PIN, INPUT_PULLUP);
-  if (digitalRead(BUTTON_BOOT_PIN) == HIGH) return WakePress::CLICK;
+WakePress detectKeyButtonPress() {
+  pinMode(BUTTON_KEY_PIN, INPUT_PULLUP);
+  if (digitalRead(BUTTON_KEY_PIN) == HIGH) return WakePress::CLICK;
 
   unsigned long start = millis();
-  while (digitalRead(BUTTON_BOOT_PIN) == LOW) {
+  while (digitalRead(BUTTON_KEY_PIN) == LOW) {
     if (millis() - start >= BUTTON_FACTORY_RESET) break;
     delay(10);
   }
@@ -90,7 +82,5 @@ WakePress detectButtonWakePress() {
 
   if (held >= BUTTON_FACTORY_RESET) return WakePress::LONGEST;
   if (held >= BUTTON_HOLD_TIME) return WakePress::LONG;
-  if (held >= BUTTON_MEDIUM_TIME) return WakePress::MEDIUM;
   return WakePress::CLICK;
 }
-

@@ -14,7 +14,7 @@ static const int WIFI_RETRY_3 = 300;
 static const int API_RETRY_1 = 15;
 static const int API_RETRY_2 = 30;
 static const int API_RETRY_3 = 60;
-static const char* WIFI_RESET_HINT = "\n\nHold BOOT for 6s\nafter wake to reset WiFi";
+static const char* WIFI_RESET_HINT = "\n\nHold KEY for 5s\nto reset WiFi";
 
 extern Preferences prefs;
 extern String configuredSSID;
@@ -26,7 +26,7 @@ extern int wifiFailCount;
 
 extern void deviceLog(const char* fmt, ...);
 extern void enableWiFiPS();
-extern void checkRuntimeReset();
+extern void checkRuntimeButtons();
 extern void showErrorScreen(const String& message);
 extern void goToDeepSleep(int seconds);
 
@@ -122,7 +122,7 @@ void wifiErrorSleep() {
       prefs.end();
       deviceLog("WiFi max retries — sleeping normal rate %ds\n", refreshRate);
       showErrorScreen("Can't connect to WiFi\n" + configuredSSID + "\n\nRetrying in " + String(refreshRate) + "s" + WIFI_RESET_HINT);
-      checkRuntimeReset();
+      checkRuntimeButtons();
       goToDeepSleep(refreshRate);
       return;
   }
@@ -132,7 +132,7 @@ void wifiErrorSleep() {
   prefs.end();
 
   showErrorScreen("Can't connect to WiFi\n" + configuredSSID + "\n\nRetrying in " + String(sleepTime) + "s" + WIFI_RESET_HINT);
-  checkRuntimeReset();
+  checkRuntimeButtons();
   goToDeepSleep(sleepTime);
 }
 
@@ -157,6 +157,6 @@ void apiErrorSleep() {
   deviceLog("API retry #%d, sleeping %ds\n", retryCount, sleepTime);
   prefs.putInt(KEY_API_RETRY_COUNT, retryCount + 1);
   prefs.end();
-  checkRuntimeReset();
+  checkRuntimeButtons();
   goToDeepSleep(sleepTime);
 }

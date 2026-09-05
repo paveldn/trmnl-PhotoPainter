@@ -34,6 +34,8 @@ RTC_DATA_ATTR uint8_t savedBSSID[6] = {0};
 RTC_DATA_ATTR uint8_t savedChannel = 0;
 RTC_DATA_ATTR int wifiFailCount = 0;
 RTC_DATA_ATTR int lastWakeTime = 0;
+RTC_DATA_ATTR bool imageContentValid = false;
+RTC_DATA_ATTR bool forceSpecialFunctionNextBoot = false;
 
 Preferences prefs;
 unsigned long startupMillis = 0;
@@ -82,6 +84,7 @@ const char* DEFAULT_API_BASE_URL_STR = "https://trmnl.app";
 const char* UPDATE_SOURCE_STR = "COLD";
 
 void invalidateImageCache(const char* reason = nullptr) {
+  imageContentValid = false;
   prefs.begin(NVS_NAMESPACE, false);
   bool hadFilename = prefs.isKey(KEY_LAST_FILENAME);
   bool hadEtag = prefs.isKey(KEY_IMAGE_ETAG);
@@ -126,19 +129,26 @@ void setup() {
 
   loadSettings();
 
-  bool isSpecialFunction = false;
+  bool isSpecialFunction = forceSpecialFunctionNextBoot;
+  forceSpecialFunctionNextBoot = false;
   if (wakeup == ESP_SLEEP_WAKEUP_EXT1) {
-    WakePress press = detectButtonWakePress();
-    switch (press) {
-      case WakePress::LONGEST:
+    uint64_t wakePins = esp_sleep_get_ext1_wakeup_status();
+    if (wakePins & (1ULL << BUTTON_BOOT_PIN)) {
+      enterFlashMode();
+      return;
+    }
+    if (wakePins & (1ULL << BUTTON_KEY_PIN)) {
+      WakePress press = detectKeyButtonPress();
+      if (press == WakePress::LONGEST) {
         prefs.begin(NVS_NAMESPACE, false);
         prefs.clear();
         prefs.end();
         showErrorScreen("Factory Reset\n\nAll settings cleared\nRestarting...");
-        delay(2000);
+        delay(1500);
         ESP.restart();
         return;
-      case WakePress::LONG:
+      }
+      if (press == WakePress::LONG) {
         prefs.begin(NVS_NAMESPACE, false);
         prefs.remove(KEY_WIFI_SSID);
         prefs.remove(KEY_WIFI_PASS);
@@ -148,19 +158,16 @@ void setup() {
         delay(1000);
         ESP.restart();
         return;
-      case WakePress::MEDIUM:
-        if (specialFunction == "add_wifi") {
-          showSetupScreen("Opening WiFi Setup...\nPhotoPainter-TRMNL\n192.168.4.1");
-          startCaptivePortal();
-          return;
-        }
-        isSpecialFunction = true;
-        break;
-      case WakePress::CLICK:
-      default:
-        break;
+      }
+      isSpecialFunction = true;
     }
-  } else if (handleBootButtonReset()) {
+  } else if (handleKeyButtonAtStartup()) {
+    return;
+  }
+
+  if (isSpecialFunction && specialFunction == "add_wifi") {
+    showSetupScreen("Opening WiFi Setup...\nPhotoPainter-TRMNL\n192.168.4.1");
+    startCaptivePortal();
     return;
   }
 
@@ -191,7 +198,7 @@ void setup() {
     if (apiKey.length() == 0) return;
   }
 
-  fetchAndDisplay(getBatteryVoltage(), isSpecialFunction);
+  fetchAndDisplay(bootVoltage, isSpecialFunction);
   goToDeepSleep(refreshRate);
 }
 

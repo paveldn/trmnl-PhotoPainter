@@ -17,6 +17,7 @@ static constexpr int I2C_SCL_PIN = 48;
 static constexpr int AXP2101_IRQ_PIN = 21;
 
 static constexpr int BUTTON_BOOT_PIN = 0;
+static constexpr int BUTTON_KEY_PIN = 4;
+static constexpr int BUTTON_PWR_PIN = 5;
 static constexpr int LED_RED_PIN = 45;
 static constexpr int LED_GREEN_PIN = 42;
-
