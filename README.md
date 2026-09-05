@@ -32,7 +32,7 @@ Display pins:
 - Official TRMNL and custom/local TRMNL-compatible servers
 - MAC-based setup registration
 - TRMNL `/api/display` polling with BYOD headers
-- BMP download and six-color palette rendering
+- PNG, JPEG, and BMP download with six-color palette rendering
 - Image caching through filename plus HTTP validators
 - Deep sleep with timer and BOOT-button wake
 - AXP2101 battery and USB telemetry
@@ -40,10 +40,10 @@ Display pins:
 
 ## Current Limitations
 
-- Image decoding is BMP-first. Configure the TRMNL server for 800x480 BMP output.
+- Images are centered without scaling. Configure the TRMNL server for 800x480 output.
 - The display and power paths compile against Waveshare's reference pinout and
   init sequence, but they still need testing on the actual PhotoPainter hardware.
-- PNG/JPG decoding is not enabled yet.
+- PNG transparency is rendered against a white background.
 
 ## Build
 

@@ -1,6 +1,12 @@
 #include "image_pipeline.h"
 
 #include <HTTPClient.h>
+#include <PNGdec.h>
+#undef INTELSHORT
+#undef INTELLONG
+#undef MOTOSHORT
+#undef MOTOLONG
+#include <JPEGDEC.h>
 #include <Preferences.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
@@ -10,6 +16,12 @@
 #include "trmnl_keys.h"
 
 static constexpr int MAX_IMAGE_SIZE = 1200000;
+static bool imageFramebufferChanged = false;
+static String imageDisplayError;
+static PNG pngDecoder;
+static JPEGDEC jpegDecoder;
+static int imageXOffset = 0;
+static int imageYOffset = 0;
 
 extern Preferences prefs;
 extern String apiBaseUrl;
@@ -76,6 +88,95 @@ static uint8_t nearestPanelColor(uint8_t r, uint8_t g, uint8_t b) {
     }
   }
   return best;
+}
+
+static void drawRgb565Pixel(int x, int y, uint16_t pixel) {
+  uint8_t r = static_cast<uint8_t>(((pixel >> 11) & 0x1F) * 255 / 31);
+  uint8_t g = static_cast<uint8_t>(((pixel >> 5) & 0x3F) * 255 / 63);
+  uint8_t b = static_cast<uint8_t>((pixel & 0x1F) * 255 / 31);
+  display.drawNativePixel(x, y, nearestPanelColor(r, g, b));
+}
+
+static int drawPngLine(PNGDRAW* draw) {
+  uint16_t pixels[DISPLAY_WIDTH];
+  if (draw->iWidth > DISPLAY_WIDTH) return 0;
+
+  pngDecoder.getLineAsRGB565(draw, pixels, PNG_RGB565_LITTLE_ENDIAN, 0xFFFFFFFF);
+  int dstY = draw->y + imageYOffset;
+  if (dstY < 0 || dstY >= DISPLAY_HEIGHT) return 1;
+
+  for (int x = 0; x < draw->iWidth; ++x) {
+    int dstX = x + imageXOffset;
+    if (dstX >= 0 && dstX < DISPLAY_WIDTH) {
+      drawRgb565Pixel(dstX, dstY, pixels[x]);
+    }
+  }
+  return 1;
+}
+
+static int drawJpegBlock(JPEGDRAW* draw) {
+  for (int y = 0; y < draw->iHeight; ++y) {
+    int dstY = draw->y + y;
+    if (dstY < 0 || dstY >= DISPLAY_HEIGHT) continue;
+
+    for (int x = 0; x < draw->iWidthUsed; ++x) {
+      int dstX = draw->x + x;
+      if (dstX >= 0 && dstX < DISPLAY_WIDTH) {
+        drawRgb565Pixel(dstX, dstY, draw->pPixels[y * draw->iWidth + x]);
+      }
+    }
+  }
+  return 1;
+}
+
+static bool decodePngToDisplay(uint8_t* data, size_t len) {
+  int result = pngDecoder.openRAM(data, static_cast<int>(len), drawPngLine);
+  if (result != PNG_SUCCESS) {
+    deviceLog("PNG: open failed %d\n", result);
+    return false;
+  }
+
+  int width = pngDecoder.getWidth();
+  int height = pngDecoder.getHeight();
+  if (width <= 0 || height <= 0 || width > DISPLAY_WIDTH) {
+    deviceLog("PNG: unsupported size %dx%d\n", width, height);
+    pngDecoder.close();
+    return false;
+  }
+
+  imageXOffset = (DISPLAY_WIDTH - width) / 2;
+  imageYOffset = (DISPLAY_HEIGHT - height) / 2;
+  display.clear(PP_WHITE);
+  result = pngDecoder.decode(nullptr, 0);
+  pngDecoder.close();
+  if (result != PNG_SUCCESS) {
+    deviceLog("PNG: decode failed %d\n", result);
+    return false;
+  }
+  return true;
+}
+
+static bool decodeJpegToDisplay(uint8_t* data, size_t len) {
+  if (!jpegDecoder.openRAM(data, static_cast<int>(len), drawJpegBlock)) {
+    deviceLog("JPEG: open failed %d\n", jpegDecoder.getLastError());
+    return false;
+  }
+
+  int width = jpegDecoder.getWidth();
+  int height = jpegDecoder.getHeight();
+  if (width <= 0 || height <= 0 || width > DISPLAY_WIDTH || height > DISPLAY_HEIGHT) {
+    deviceLog("JPEG: unsupported size %dx%d\n", width, height);
+    jpegDecoder.close();
+    return false;
+  }
+
+  imageXOffset = (DISPLAY_WIDTH - width) / 2;
+  imageYOffset = (DISPLAY_HEIGHT - height) / 2;
+  display.clear(PP_WHITE);
+  int result = jpegDecoder.decode(imageXOffset, imageYOffset, 0);
+  if (!result) deviceLog("JPEG: decode failed %d\n", jpegDecoder.getLastError());
+  jpegDecoder.close();
+  return result == 1;
 }
 
 static bool decodeBmpToDisplay(const uint8_t* data, size_t len) {
@@ -174,13 +275,25 @@ static bool decodeBmpToDisplay(const uint8_t* data, size_t len) {
   return true;
 }
 
-void displayImage(const char* imageUrl) {
+bool displayImage(const char* imageUrl) {
   deviceLog("Downloading image\n");
+  imageFramebufferChanged = false;
+  imageDisplayError = "";
+
   if (downloadAndDisplayImage(imageUrl)) {
-    display.refresh();
-    deviceLog("Display done\n");
+    if (imageFramebufferChanged) {
+      display.refresh();
+      deviceLog("Display done\n");
+    } else {
+      deviceLog("Image unchanged\n");
+    }
+    return true;
   } else {
     deviceLog("Image display failed\n");
+    if (imageDisplayError.length() > 0) {
+      showErrorScreen(imageDisplayError);
+    }
+    return false;
   }
 }
 
@@ -213,7 +326,7 @@ bool downloadAndDisplayImage(const char* url) {
   if (code == HTTP_CODE_NOT_MODIFIED) {
     deviceLog("Image HTTP 304 Not Modified\n");
     http.end();
-    return false;
+    return true;
   }
 #endif
   if (code != HTTP_CODE_OK) {
@@ -225,6 +338,7 @@ bool downloadAndDisplayImage(const char* url) {
   int len = http.getSize();
   if (len <= 0 || len > MAX_IMAGE_SIZE) {
     deviceLog("Image invalid size: %d\n", len);
+    imageDisplayError = "Image download failed\nInvalid image size\nCheck server output";
     http.end();
     return false;
   }
@@ -243,21 +357,43 @@ bool downloadAndDisplayImage(const char* url) {
   String respLast = http.header("Last-Modified");
   http.end();
 
-  if (respEtag.length() > 0 || respLast.length() > 0) {
+  bool success = false;
+  if (bytesRead >= 2 && buffer[0] == 'B' && buffer[1] == 'M') {
+    success = decodeBmpToDisplay(buffer, bytesRead);
+    if (success) {
+      imageFramebufferChanged = true;
+    } else {
+      imageDisplayError = "BMP decode failed\nUse 800x480 BMP\nCheck server output";
+    }
+  } else if (bytesRead >= 4 && buffer[0] == 0x89 && buffer[1] == 0x50 &&
+             buffer[2] == 0x4E && buffer[3] == 0x47) {
+    success = decodePngToDisplay(buffer, bytesRead);
+    if (success) {
+      imageFramebufferChanged = true;
+    } else {
+      imageDisplayError = "PNG decode failed\nUse an 800x480 image\nCheck server output";
+    }
+  } else if (bytesRead >= 2 && buffer[0] == 0xFF && buffer[1] == 0xD8) {
+    success = decodeJpegToDisplay(buffer, bytesRead);
+    if (success) {
+      imageFramebufferChanged = true;
+    } else {
+      imageDisplayError = "JPEG decode failed\nUse an 800x480 image\nCheck server output";
+    }
+  } else {
+    uint8_t first = bytesRead > 0 ? buffer[0] : 0;
+    uint8_t second = bytesRead > 1 ? buffer[1] : 0;
+    deviceLog("Unsupported image format: %02X %02X\n", first, second);
+    imageDisplayError = "Image format error\nUse PNG, JPEG, or BMP\nCheck server output";
+  }
+
+  if (success && (respEtag.length() > 0 || respLast.length() > 0)) {
     prefs.begin(NVS_NAMESPACE, false);
     if (respEtag.length() > 0) prefs.putString(KEY_IMAGE_ETAG, respEtag);
     if (respLast.length() > 0) prefs.putString(KEY_IMAGE_LASTMOD, respLast);
     prefs.end();
   }
 
-  bool success = false;
-  if (bytesRead >= 2 && buffer[0] == 'B' && buffer[1] == 'M') {
-    success = decodeBmpToDisplay(buffer, bytesRead);
-  } else {
-    deviceLog("Unsupported image format: %02X %02X\n", buffer[0], buffer[1]);
-  }
-
   free(buffer);
   return success;
 }
-

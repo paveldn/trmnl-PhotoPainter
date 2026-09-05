@@ -153,8 +153,11 @@ void PhotoPainterDisplay::drawPixel(int16_t x, int16_t y, uint16_t color) {
 
 void PhotoPainterDisplay::drawNativePixel(int16_t x, int16_t y, uint8_t color) {
   if (!buffer_ || x < 0 || y < 0 || x >= DISPLAY_WIDTH || y >= DISPLAY_HEIGHT) return;
-  size_t index = (static_cast<size_t>(y) * DISPLAY_WIDTH + x) / 2;
-  if ((x & 1) == 0) {
+
+  int16_t panelX = DISPLAY_WIDTH - 1 - x;
+  int16_t panelY = DISPLAY_HEIGHT - 1 - y;
+  size_t index = (static_cast<size_t>(panelY) * DISPLAY_WIDTH + panelX) / 2;
+  if ((panelX & 1) == 0) {
     buffer_[index] = (buffer_[index] & 0x0F) | ((color & 0x0F) << 4);
   } else {
     buffer_[index] = (buffer_[index] & 0xF0) | (color & 0x0F);
@@ -262,4 +265,3 @@ void showErrorScreen(const String& message) {
   invalidateImageCache("error_screen");
   drawCenteredLines("Error", message);
 }
-

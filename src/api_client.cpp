@@ -452,24 +452,29 @@ void fetchAndDisplay(float batteryVoltage, bool specialFunctionActive) {
 
   // Check if filename changed (image caching)
   bool needsUpdate = true;
+  bool shouldSaveFilename = false;
 #ifdef FORCE_IMAGE_REFRESH_ON_WAKE
   deviceLog("Image force-refresh enabled - redrawing on every wake\n");
 #else
   if (filename && strlen(filename) > 0) {
-    prefs.begin(NVS_NAMESPACE, false);
+    prefs.begin(NVS_NAMESPACE, true);
     String lastFile = prefs.getString(KEY_LAST_FILENAME, "");
     if (lastFile == String(filename)) {
       deviceLog("Image unchanged (same filename) — skipping display\n");
       needsUpdate = false;
     } else {
-      prefs.putString(KEY_LAST_FILENAME, String(filename));
+      shouldSaveFilename = true;
     }
     prefs.end();
   }
 #endif
 
   if (needsUpdate) {
-    displayImage(imageUrl);
+    if (displayImage(imageUrl) && shouldSaveFilename) {
+      prefs.begin(NVS_NAMESPACE, false);
+      prefs.putString(KEY_LAST_FILENAME, String(filename));
+      prefs.end();
+    }
   }
 
   // Allow user to perform runtime resets by holding the wake button now.
