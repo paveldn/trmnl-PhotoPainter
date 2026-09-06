@@ -45,13 +45,16 @@ def build_manifest(version: str) -> dict[str, object]:
     }
 
 
-def prepare(output: Path, firmware: Path) -> None:
+def prepare(output: Path, firmware: Path, version: str | None = None) -> None:
     if not firmware.is_file():
         raise FileNotFoundError(f"Factory image not found at {firmware}. Run `pio run` first.")
 
     shutil.copytree(WEB_SOURCE, output, dirs_exist_ok=True)
     shutil.copy2(firmware, output / "photopainter.factory.bin")
-    manifest = build_manifest(read_firmware_version())
+    firmware_version = version or read_firmware_version()
+    if not VERSION_PATTERN.fullmatch(firmware_version):
+        raise ValueError("version must look like 0.1.0 or 0.1.0-beta.1")
+    manifest = build_manifest(firmware_version)
     (output / "manifest.json").write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
@@ -72,10 +75,13 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_FIRMWARE,
         help="Path to the PlatformIO factory image",
     )
+    parser.add_argument(
+        "--version",
+        help="Firmware version for the manifest (defaults to platformio.ini)",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    prepare(args.output.resolve(), args.firmware.resolve())
-
+    prepare(args.output.resolve(), args.firmware.resolve(), args.version)

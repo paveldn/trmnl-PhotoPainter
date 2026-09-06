@@ -12,6 +12,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      tag: ${{ steps.naming.outputs.tag_name }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -130,3 +132,13 @@ jobs:
           files: |
             dist/photopainter.bin
             dist/photopainter.factory.bin
+
+  deploy-flasher:
+    needs: prerelease
+    uses: ./.github/workflows/pages.yml
+    with:
+      release_tag: ${{ needs.prerelease.outputs.tag }}
+    permissions:
+      contents: read
+      pages: write
+      id-token: write

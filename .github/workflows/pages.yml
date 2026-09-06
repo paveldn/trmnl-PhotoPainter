@@ -3,7 +3,16 @@ name: Browser Flasher
 on:
   push:
     branches: [main]
+  release:
+    types: [published]
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      release_tag:
+        description: Release tag whose factory image should be deployed
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -20,7 +29,46 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Resolve Firmware Source
+        id: source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.release_tag }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          tag="${INPUT_TAG:-${EVENT_TAG:-}}"
+          if [[ -z "$tag" ]]; then
+            tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases" \
+              --jq 'map(select(.draft == false)) | sort_by(.published_at) | reverse | .[0].tag_name // ""')"
+          fi
+          if [[ -n "$tag" ]]; then
+            if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "Invalid release tag: $tag" >&2
+              exit 1
+            fi
+            echo "release_tag=$tag" >> "$GITHUB_OUTPUT"
+            echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+            echo "use_release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "use_release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download Released Firmware
+        if: steps.source.outputs.use_release == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.source.outputs.release_tag }}
+        run: |
+          mkdir -p dist/release
+          gh release download "$RELEASE_TAG" \
+            --pattern photopainter.factory.bin \
+            --dir dist/release
+
       - uses: actions/cache@v5
+        if: steps.source.outputs.use_release != 'true'
         with:
           path: |
             ~/.cache/pip
@@ -32,13 +80,23 @@ jobs:
           python-version: "3.11"
 
       - name: Install PlatformIO
+        if: steps.source.outputs.use_release != 'true'
         run: pip install platformio
 
       - name: Build Firmware
+        if: steps.source.outputs.use_release != 'true'
         run: pio run
 
-      - name: Prepare Browser Installer
+      - name: Prepare Browser Installer From Source
+        if: steps.source.outputs.use_release != 'true'
         run: python scripts/prepare_web_installer.py
+
+      - name: Prepare Browser Installer From Release
+        if: steps.source.outputs.use_release == 'true'
+        run: >-
+          python scripts/prepare_web_installer.py
+          --firmware dist/release/photopainter.factory.bin
+          --version "${{ steps.source.outputs.version }}"
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v6
