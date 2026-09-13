@@ -13,7 +13,7 @@ Browser flasher: https://paveldn.github.io/trmnl-PhotoPainter/
 - ESP32-S3-WROOM-1-N16R8, 16 MB flash, 8 MB PSRAM
 - 7.3-inch 800x480 six-color e-paper panel
 - AXP2101 PMIC
-- BOOT button on GPIO0, KEY on GPIO4, and PWR on GPIO5
+- BOOT button on GPIO0 and KEY button on GPIO4
 
 Display pins:
 
@@ -34,7 +34,7 @@ Display pins:
 - TRMNL `/api/display` polling with BYOD headers
 - PNG, JPEG, and BMP download with six-color palette rendering
 - Image caching through filename plus HTTP validators
-- Deep sleep with PWR, BOOT, and KEY wake
+- Deep sleep with timer, BOOT, and KEY wake
 - AXP2101 measurement shutdown during deep sleep
 - AXP2101 battery and USB telemetry
 - Server-driven OTA plus GitHub release fallback
@@ -80,7 +80,8 @@ The build target is `esp32-s3-devkitc1-n16r8`, matching the PhotoPainter's
 
 Button behavior while running or sleeping:
 
-- PWR wakes the device and performs a normal refresh.
+- PWR is handled by the onboard power-management circuit rather than as an
+  ESP32 GPIO wake button.
 - BOOT enters the ESP32-S3 ROM downloader; connect USB before pressing it.
 - A short KEY press invokes the configured TRMNL special function.
 - Holding KEY for 5 seconds clears WiFi credentials.

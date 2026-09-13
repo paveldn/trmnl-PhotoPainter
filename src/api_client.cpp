@@ -21,6 +21,8 @@
 #include "hardware.h"
 
 static const int SLEEP_NOT_CONNECTED = 5;
+static const int DEFAULT_REFRESH_RATE = 900;
+static const int MIN_NORMAL_REFRESH_RATE = 60;
 static const float LOW_BATTERY_VOLTAGE = 3.4f;
 static const uint32_t OTA_SAFETY_INTERVAL_SEC = 86400UL;
 #ifndef DEVICE_MODEL
@@ -401,10 +403,19 @@ void fetchAndDisplay(float batteryVoltage, bool specialFunctionActive) {
     deviceLog("OTA: skipped check due to low battery %.2fV < %.2fV\n", batteryVoltage, (double)OTA_MIN_BATTERY_VOLTAGE);
   }
 
-  // Update refresh rate from server
-  if (newRefreshRate != refreshRate) {
-    deviceLog("Refresh rate: %d -> %d\n", refreshRate, newRefreshRate);
-    saveRefreshRate(newRefreshRate);
+  // A special-function response can contain a transient zero/short refresh
+  // rate. Persisting it makes normal battery operation use the 16-second
+  // safety minimum forever, producing an apparent continuous update loop.
+  if (newRefreshRate >= MIN_NORMAL_REFRESH_RATE) {
+    if (newRefreshRate != refreshRate) {
+      deviceLog("Refresh rate: %d -> %d\n", refreshRate, newRefreshRate);
+      saveRefreshRate(newRefreshRate);
+    }
+  } else if (refreshRate < MIN_NORMAL_REFRESH_RATE) {
+    deviceLog("Invalid refresh rate %d; restoring %d\n", newRefreshRate, DEFAULT_REFRESH_RATE);
+    saveRefreshRate(DEFAULT_REFRESH_RATE);
+  } else {
+    deviceLog("Ignoring transient refresh rate %d\n", newRefreshRate);
   }
 
   // ── OTA firmware update ──

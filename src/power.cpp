@@ -5,6 +5,7 @@
 #include <Wire.h>
 #include <XPowersLib.h>
 #include <driver/gpio.h>
+#include <driver/rtc_io.h>
 #include <esp_sleep.h>
 #include <esp_wifi.h>
 #include <algorithm>
@@ -176,9 +177,22 @@ void goToDeepSleep(int seconds) {
   esp_sleep_pd_config(ESP_PD_DOMAIN_MAX, ESP_PD_OPTION_AUTO);
   pinMode(BUTTON_BOOT_PIN, INPUT_PULLUP);
   pinMode(BUTTON_KEY_PIN, INPUT_PULLUP);
-  pinMode(BUTTON_PWR_PIN, INPUT_PULLUP);
-  constexpr uint64_t buttonWakeMask =
-      (1ULL << BUTTON_BOOT_PIN) | (1ULL << BUTTON_KEY_PIN) | (1ULL << BUTTON_PWR_PIN);
-  esp_sleep_enable_ext1_wakeup(buttonWakeMask, ESP_EXT1_WAKEUP_ANY_LOW);
+
+  // GPIO5 is AXP2101 SYS_OUT on this board, not the physical PWR button.
+  // SYS_OUT changes state during a USB-to-battery transition and must never
+  // be used as an ESP32 wake source. The PMIC handles the PWR button itself.
+  rtc_gpio_pullup_en(static_cast<gpio_num_t>(BUTTON_BOOT_PIN));
+  rtc_gpio_pulldown_dis(static_cast<gpio_num_t>(BUTTON_BOOT_PIN));
+  rtc_gpio_pullup_en(static_cast<gpio_num_t>(BUTTON_KEY_PIN));
+  rtc_gpio_pulldown_dis(static_cast<gpio_num_t>(BUTTON_KEY_PIN));
+
+  // Never arm an already-low pin: it would wake the ESP32 immediately and
+  // create a continuous fetch/display loop.
+  uint64_t buttonWakeMask = 0;
+  if (digitalRead(BUTTON_BOOT_PIN) == HIGH) buttonWakeMask |= 1ULL << BUTTON_BOOT_PIN;
+  if (digitalRead(BUTTON_KEY_PIN) == HIGH) buttonWakeMask |= 1ULL << BUTTON_KEY_PIN;
+  if (buttonWakeMask != 0) {
+    esp_sleep_enable_ext1_wakeup(buttonWakeMask, ESP_EXT1_WAKEUP_ANY_LOW);
+  }
   esp_deep_sleep(static_cast<uint64_t>(seconds) * 1000000ULL);
 }

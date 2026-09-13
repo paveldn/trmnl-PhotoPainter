@@ -111,6 +111,18 @@ void setup() {
   bootCount++;
   startupMillis = millis();
   esp_sleep_wakeup_cause_t wakeup = esp_sleep_get_wakeup_cause();
+  uint64_t wakePins = 0;
+  bool keyWakeConfirmed = false;
+  if (wakeup == ESP_SLEEP_WAKEUP_EXT1) {
+    wakePins = esp_sleep_get_ext1_wakeup_status();
+    if (wakePins & (1ULL << BUTTON_KEY_PIN)) {
+      // USB removal can briefly pull KEY low. Confirm it is a real press
+      // before peripheral initialization makes the original level stale.
+      pinMode(BUTTON_KEY_PIN, INPUT_PULLUP);
+      delay(20);
+      keyWakeConfirmed = digitalRead(BUTTON_KEY_PIN) == LOW;
+    }
+  }
   const char* wakeStr = "COLD";
   if (wakeup == ESP_SLEEP_WAKEUP_TIMER) wakeStr = "TIMER";
   else if (wakeup == ESP_SLEEP_WAKEUP_EXT1) wakeStr = "EXT1";
@@ -132,12 +144,11 @@ void setup() {
   bool isSpecialFunction = forceSpecialFunctionNextBoot;
   forceSpecialFunctionNextBoot = false;
   if (wakeup == ESP_SLEEP_WAKEUP_EXT1) {
-    uint64_t wakePins = esp_sleep_get_ext1_wakeup_status();
     if (wakePins & (1ULL << BUTTON_BOOT_PIN)) {
       enterFlashMode();
       return;
     }
-    if (wakePins & (1ULL << BUTTON_KEY_PIN)) {
+    if ((wakePins & (1ULL << BUTTON_KEY_PIN)) && keyWakeConfirmed) {
       WakePress press = detectKeyButtonPress();
       if (press == WakePress::LONGEST) {
         prefs.begin(NVS_NAMESPACE, false);
@@ -159,6 +170,11 @@ void setup() {
         ESP.restart();
         return;
       }
+
+      // Match the request produced by a KEY click while running on USB power.
+      // TRMNL may interpret EXT1 as an Identify wake instead of applying the
+      // configured special function (for example, Next).
+      UPDATE_SOURCE_STR = "COLD";
       isSpecialFunction = true;
     }
   } else if (handleKeyButtonAtStartup()) {
