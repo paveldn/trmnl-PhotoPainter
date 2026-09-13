@@ -2,6 +2,7 @@
 
 enum class WakePress {
   CLICK,
+  SECONDARY,
   LONG,
   LONGEST,
 };
@@ -9,4 +10,4 @@ enum class WakePress {
 void enterFlashMode();
 bool handleKeyButtonAtStartup();
 void checkRuntimeButtons();
-WakePress detectKeyButtonPress();
+WakePress detectKeyButtonPress(unsigned long pressStart = 0);

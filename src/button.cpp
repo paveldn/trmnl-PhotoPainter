@@ -7,6 +7,7 @@
 #include "hardware.h"
 #include "trmnl_keys.h"
 
+static constexpr int BUTTON_SECONDARY_TIME = 3000;
 static constexpr int BUTTON_HOLD_TIME = 5000;
 static constexpr int BUTTON_FACTORY_RESET = 15000;
 
@@ -37,8 +38,11 @@ static void handleKeyPress(WakePress press, bool restartForClick) {
     ESP.restart();
   }
 
-  if (restartForClick) {
+  if (press == WakePress::SECONDARY) {
     forceSpecialFunctionNextBoot = true;
+  }
+
+  if (restartForClick) {
     ESP.restart();
   }
 }
@@ -69,11 +73,13 @@ void checkRuntimeButtons() {
   }
 }
 
-WakePress detectKeyButtonPress() {
+WakePress detectKeyButtonPress(unsigned long pressStart) {
   pinMode(BUTTON_KEY_PIN, INPUT_PULLUP);
   if (digitalRead(BUTTON_KEY_PIN) == HIGH) return WakePress::CLICK;
 
-  unsigned long start = millis();
+  // For a deep-sleep wake, the caller passes the earliest available millis()
+  // value so initialization time is included in the physical hold duration.
+  unsigned long start = pressStart == 0 ? millis() : pressStart;
   while (digitalRead(BUTTON_KEY_PIN) == LOW) {
     if (millis() - start >= BUTTON_FACTORY_RESET) break;
     delay(10);
@@ -82,5 +88,6 @@ WakePress detectKeyButtonPress() {
 
   if (held >= BUTTON_FACTORY_RESET) return WakePress::LONGEST;
   if (held >= BUTTON_HOLD_TIME) return WakePress::LONG;
+  if (held >= BUTTON_SECONDARY_TIME) return WakePress::SECONDARY;
   return WakePress::CLICK;
 }

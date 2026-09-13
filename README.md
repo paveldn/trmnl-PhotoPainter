@@ -34,7 +34,7 @@ Display pins:
 - TRMNL `/api/display` polling with BYOD headers
 - PNG, JPEG, and BMP download with six-color palette rendering
 - Image caching through filename plus HTTP validators
-- Deep sleep with timer, BOOT, and KEY wake
+- Deep sleep with timer and KEY wake
 - AXP2101 measurement shutdown during deep sleep
 - AXP2101 battery and USB telemetry
 - Server-driven OTA plus GitHub release fallback
@@ -82,7 +82,10 @@ Button behavior while running or sleeping:
 
 - PWR is handled by the onboard power-management circuit rather than as an
   ESP32 GPIO wake button.
-- BOOT enters the ESP32-S3 ROM downloader; connect USB before pressing it.
-- A short KEY press invokes the configured TRMNL special function.
+- BOOT enters the ESP32-S3 ROM downloader while the device is awake on USB.
+  It is not armed as a battery deep-sleep wake source, preventing false wakes
+  from leaving the frame stuck in flashing mode.
+- A short KEY press performs an ordinary refresh.
+- Holding KEY for 3 seconds invokes the configured TRMNL special function.
 - Holding KEY for 5 seconds clears WiFi credentials.
 - Holding KEY for 15 seconds performs a factory reset.

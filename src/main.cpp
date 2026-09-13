@@ -113,6 +113,7 @@ void setup() {
   esp_sleep_wakeup_cause_t wakeup = esp_sleep_get_wakeup_cause();
   uint64_t wakePins = 0;
   bool keyWakeConfirmed = false;
+  WakePress wakePress = WakePress::CLICK;
   if (wakeup == ESP_SLEEP_WAKEUP_EXT1) {
     wakePins = esp_sleep_get_ext1_wakeup_status();
     if (wakePins & (1ULL << BUTTON_KEY_PIN)) {
@@ -121,6 +122,11 @@ void setup() {
       pinMode(BUTTON_KEY_PIN, INPUT_PULLUP);
       delay(20);
       keyWakeConfirmed = digitalRead(BUTTON_KEY_PIN) == LOW;
+      if (keyWakeConfirmed) {
+        // Classify before power/display initialization. Passing the setup
+        // entry time also counts time already spent handling this wake.
+        wakePress = detectKeyButtonPress(startupMillis);
+      }
     }
   }
   const char* wakeStr = "COLD";
@@ -144,13 +150,8 @@ void setup() {
   bool isSpecialFunction = forceSpecialFunctionNextBoot;
   forceSpecialFunctionNextBoot = false;
   if (wakeup == ESP_SLEEP_WAKEUP_EXT1) {
-    if (wakePins & (1ULL << BUTTON_BOOT_PIN)) {
-      enterFlashMode();
-      return;
-    }
     if ((wakePins & (1ULL << BUTTON_KEY_PIN)) && keyWakeConfirmed) {
-      WakePress press = detectKeyButtonPress();
-      if (press == WakePress::LONGEST) {
+      if (wakePress == WakePress::LONGEST) {
         prefs.begin(NVS_NAMESPACE, false);
         prefs.clear();
         prefs.end();
@@ -159,7 +160,7 @@ void setup() {
         ESP.restart();
         return;
       }
-      if (press == WakePress::LONG) {
+      if (wakePress == WakePress::LONG) {
         prefs.begin(NVS_NAMESPACE, false);
         prefs.remove(KEY_WIFI_SSID);
         prefs.remove(KEY_WIFI_PASS);
@@ -171,11 +172,14 @@ void setup() {
         return;
       }
 
-      // Match the request produced by a KEY click while running on USB power.
-      // TRMNL may interpret EXT1 as an Identify wake instead of applying the
-      // configured special function (for example, Next).
+      // A short press is an ordinary manual refresh. Only a deliberate
+      // three-second hold invokes the configured secondary function.
       UPDATE_SOURCE_STR = "COLD";
-      isSpecialFunction = true;
+      isSpecialFunction = wakePress == WakePress::SECONDARY;
+    } else {
+      // An unconfirmed external wake is electrical noise, not a button
+      // action. Keep it on the normal refresh path.
+      UPDATE_SOURCE_STR = "TIMER";
     }
   } else if (handleKeyButtonAtStartup()) {
     return;
