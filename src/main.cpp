@@ -142,7 +142,6 @@ void setup() {
   setCpuFrequencyMhz(80);
   btStop();
   initPower();
-  initDisplay();
   deviceLog("[Boot #%d] Wake: %s\n", bootCount, wakeStr);
 
   loadSettings();

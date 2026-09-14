@@ -10,4 +10,5 @@ enum class WakePress {
 void enterFlashMode();
 bool handleKeyButtonAtStartup();
 void checkRuntimeButtons();
+void checkRuntimeKeyButton();
 WakePress detectKeyButtonPress(unsigned long pressStart = 0);

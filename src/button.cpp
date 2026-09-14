@@ -73,6 +73,11 @@ void checkRuntimeButtons() {
   pinMode(BUTTON_BOOT_PIN, INPUT_PULLUP);
   pinMode(BUTTON_KEY_PIN, INPUT_PULLUP);
   if (digitalRead(BUTTON_BOOT_PIN) == LOW) enterFlashMode();
+  checkRuntimeKeyButton();
+}
+
+void checkRuntimeKeyButton() {
+  pinMode(BUTTON_KEY_PIN, INPUT_PULLUP);
   if (digitalRead(BUTTON_KEY_PIN) == LOW) {
     handleKeyPress(detectKeyButtonPress(), true);
   }

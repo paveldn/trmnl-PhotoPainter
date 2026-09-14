@@ -70,6 +70,21 @@ static void holdSleepGpios() {
   gpio_deep_sleep_hold_en();
 }
 
+void enableDisplayPower() {
+  if (!pmuReady) return;
+  pmu.setALDO3Voltage(3300);
+  pmu.enableALDO3();
+  pmu.setALDO4Voltage(3300);
+  pmu.enableALDO4();
+}
+
+void disconnectWiFi() {
+  if (WiFi.getMode() == WIFI_OFF) return;
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  delay(10);
+}
+
 extern unsigned long startupMillis;
 extern int lastWakeTime;
 extern void deviceLog(const char* fmt, ...);
@@ -101,10 +116,10 @@ void initPower() {
 
   pmu.disableSleep();
   disableUnusedPmuRails();
-  pmu.setALDO3Voltage(3300);
-  pmu.enableALDO3();
-  pmu.setALDO4Voltage(3300);
-  pmu.enableALDO4();
+  // Power the e-paper rails at the start of the wake cycle. The PhotoPainter
+  // panel does not reliably leave BUSY after ALDO3/ALDO4 are cold-started only
+  // immediately before reset. They are still disabled for the entire sleep.
+  enableDisplayPower();
   pmu.setVbusCurrentLimit(XPOWERS_AXP2101_VBUS_CUR_LIM_2000MA);
   pmu.setPrechargeCurr(XPOWERS_AXP2101_PRECHARGE_50MA);
   pmu.setChargerConstantCurr(XPOWERS_AXP2101_CHG_CUR_500MA);
@@ -157,6 +172,9 @@ bool isBatteryCharging() {
 
 void showLowBatteryAndShutdown() {
   invalidateImageCache("low_battery_screen");
+  if (!display.begin()) {
+    deviceLog("Display allocation/init failed\n");
+  }
   display.clear(PP_WHITE);
   display.setTextColor(PP_BLACK);
   display.setTextSize(3);
@@ -168,7 +186,7 @@ void showLowBatteryAndShutdown() {
   display.refresh();
 
   deviceLog("Shutting down on low battery\n");
-  sendLogs();
+  if (WiFi.status() == WL_CONNECTED) sendLogs();
   Serial.flush();
   display.sleep();
   preparePmuForSleep();
@@ -183,15 +201,13 @@ void goToDeepSleep(int seconds) {
   if (seconds < 15) seconds = 16;
   lastWakeTime = (millis() - startupMillis) / 1000;
   deviceLog("Sleep: %d seconds\n", seconds);
-  sendLogs();
+  // A new-image path may already have sent logs and disabled WiFi before the
+  // slow panel refresh. Do not start a doomed HTTP request in that case.
+  if (WiFi.status() == WL_CONNECTED) sendLogs();
   Serial.flush();
   delay(10);
 
-  if (WiFi.getMode() != WIFI_OFF) {
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
-    delay(10);
-  }
+  disconnectWiFi();
 
   display.sleep();
 
@@ -202,7 +218,10 @@ void goToDeepSleep(int seconds) {
     int remaining = seconds;
     while (remaining > 0 && isExternalPowerPresent()) {
       for (int i = 0; i < 20; ++i) {
-        checkRuntimeButtons();
+        // GPIO0/BOOT can be electrically unstable while native USB is
+        // attached. Entering its ROM loader here would make KEY unresponsive
+        // until a power cycle, so the USB-idle loop listens only to KEY.
+        checkRuntimeKeyButton();
         delay(50);
       }
       --remaining;
@@ -218,6 +237,9 @@ void goToDeepSleep(int seconds) {
   Wire.end();
   holdSleepGpios();
   esp_sleep_pd_config(ESP_PD_DOMAIN_MAX, ESP_PD_OPTION_AUTO);
+  // EXT1 needs the RTC IO pull-up to remain effective while sleeping. Keeping
+  // RTC_PERIPH on is the most reliable configuration across ESP-IDF versions.
+  esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
   pinMode(BUTTON_KEY_PIN, INPUT_PULLUP);
 
   // GPIO5 is AXP2101 SYS_OUT on this board, not the physical PWR button.

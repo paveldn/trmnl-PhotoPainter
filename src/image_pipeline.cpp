@@ -14,6 +14,7 @@
 
 #include "api_helpers.h"
 #include "display.h"
+#include "power.h"
 #include "trmnl_keys.h"
 
 static constexpr int MAX_IMAGE_SIZE = 1200000;
@@ -33,6 +34,7 @@ extern bool imageContentValid;
 
 extern void deviceLog(const char* fmt, ...);
 extern void disableWiFiPS();
+extern void sendLogs();
 
 String getWifiBand() {
   wifi_bandwidth_t bandwidth;
@@ -301,7 +303,16 @@ bool displayImage(const char* imageUrl) {
 
   if (downloadAndDisplayImage(imageUrl)) {
     if (imageFramebufferChanged) {
-      display.refresh();
+      // Finish reporting before the slow physical update, then shut the radio
+      // down for the roughly 25-second panel refresh.
+      sendLogs();
+      disconnectWiFi();
+      if (!display.refresh()) {
+        imageContentValid = false;
+        imageDisplayError = "Display refresh failed";
+        deviceLog("Display refresh failed (EPD busy timeout)\n");
+        return false;
+      }
       imageContentValid = true;
       deviceLog("Display done\n");
     } else {
@@ -310,7 +321,10 @@ bool displayImage(const char* imageUrl) {
     return true;
   } else {
     deviceLog("Image display failed\n");
-    if (imageDisplayError.length() > 0) {
+    // A panel initialization failure cannot itself be shown on the panel. Do
+    // not retry begin() here and incur another full BUSY timeout.
+    if (imageDisplayError.length() > 0 &&
+        imageDisplayError != "Display initialization failed") {
       showErrorScreen(imageDisplayError);
     }
     return false;
@@ -405,6 +419,15 @@ bool downloadAndDisplayImage(const char* url) {
   if (bytesRead != static_cast<size_t>(len)) {
     deviceLog("Image download incomplete\n");
     imageDisplayError = "Image download failed\nIncomplete response\nCheck WiFi signal";
+    free(buffer);
+    return false;
+  }
+
+  // Downloading and HTTP validation do not require panel power. Initialize it
+  // only after a complete new image is available for decoding.
+  if (!display.begin()) {
+    deviceLog("Display allocation/init failed\n");
+    imageDisplayError = "Display initialization failed";
     free(buffer);
     return false;
   }

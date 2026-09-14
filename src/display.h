@@ -20,7 +20,7 @@ public:
 
   bool begin();
   void clear(uint8_t color = PP_WHITE);
-  void refresh();
+  bool refresh();
   void sleep();
   uint8_t* framebuffer();
   size_t framebufferSize() const;
@@ -30,7 +30,7 @@ public:
 
 private:
   void resetPanel();
-  void waitBusy();
+  bool waitBusy();
   void sendCommand(uint8_t command);
   void sendData(uint8_t data);
   void sendBuffer(const uint8_t* data, size_t len);
@@ -46,4 +46,3 @@ void initDisplay();
 void showLoadingScreen();
 void showSetupScreen(const String& message);
 void showErrorScreen(const String& message);
-

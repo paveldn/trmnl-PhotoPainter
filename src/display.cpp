@@ -3,6 +3,8 @@
 #include <SPI.h>
 #include <esp_heap_caps.h>
 
+#include "power.h"
+
 PhotoPainterDisplay display;
 
 extern const char* FW_VERSION_STR;
@@ -22,6 +24,11 @@ bool PhotoPainterDisplay::begin() {
   }
   if (!buffer_) return false;
 
+  enableDisplayPower();
+  // The EPD logic and its high-voltage power circuit need time to settle after
+  // ALDO3/ALDO4 are enabled. Previously this happened incidentally during boot.
+  delay(100);
+
   pinMode(EPD_CS_PIN, OUTPUT);
   pinMode(EPD_DC_PIN, OUTPUT);
   pinMode(EPD_RST_PIN, OUTPUT);
@@ -34,7 +41,7 @@ bool PhotoPainterDisplay::begin() {
 
   clear();
   resetPanel();
-  waitBusy();
+  if (!waitBusy()) return false;
   delay(50);
 
   sendCommand(0xAA);
@@ -99,7 +106,7 @@ bool PhotoPainterDisplay::begin() {
   sendData(0x2F);
 
   sendCommand(0x04);
-  waitBusy();
+  if (!waitBusy()) return false;
   begun_ = true;
   return true;
 }
@@ -109,13 +116,13 @@ void PhotoPainterDisplay::clear(uint8_t color) {
   memset(buffer_, (color << 4) | (color & 0x0F), framebufferSize());
 }
 
-void PhotoPainterDisplay::refresh() {
-  if (!begun_ && !begin()) return;
+bool PhotoPainterDisplay::refresh() {
+  if (!begun_ && !begin()) return false;
   sendCommand(0x10);
   sendBuffer(buffer_, framebufferSize());
 
   sendCommand(0x04);
-  waitBusy();
+  if (!waitBusy()) return false;
 
   sendCommand(0x06);
   sendData(0x6F);
@@ -125,11 +132,11 @@ void PhotoPainterDisplay::refresh() {
 
   sendCommand(0x12);
   sendData(0x00);
-  waitBusy();
+  if (!waitBusy()) return false;
 
   sendCommand(0x02);
   sendData(0x00);
-  waitBusy();
+  return waitBusy();
 }
 
 void PhotoPainterDisplay::sleep() {
@@ -173,15 +180,16 @@ void PhotoPainterDisplay::resetPanel() {
   delay(50);
 }
 
-void PhotoPainterDisplay::waitBusy() {
+bool PhotoPainterDisplay::waitBusy() {
   const unsigned long started = millis();
   while (digitalRead(EPD_BUSY_PIN) == LOW) {
     if (millis() - started > 120000UL) {
       deviceLog("EPD busy timeout\n");
-      return;
+      return false;
     }
     delay(10);
   }
+  return true;
 }
 
 void PhotoPainterDisplay::sendCommand(uint8_t command) {
@@ -215,6 +223,10 @@ uint8_t PhotoPainterDisplay::mapGfxColor(uint16_t color) const {
 }
 
 static void drawCenteredLines(const String& title, const String& message) {
+  if (!display.begin()) {
+    deviceLog("Display allocation/init failed\n");
+    return;
+  }
   display.clear(PP_WHITE);
   display.setTextColor(PP_BLACK);
   display.setTextSize(3);
