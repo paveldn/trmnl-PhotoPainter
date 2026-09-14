@@ -15,6 +15,7 @@ static constexpr int EPD_BUSY_PIN = 13;
 static constexpr int I2C_SDA_PIN = 47;
 static constexpr int I2C_SCL_PIN = 48;
 static constexpr int AXP2101_IRQ_PIN = 21;
+static constexpr int AUDIO_CTRL_PIN = 3;
 
 static constexpr int BUTTON_BOOT_PIN = 0;
 static constexpr int BUTTON_KEY_PIN = 4;

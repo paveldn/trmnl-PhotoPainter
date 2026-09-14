@@ -27,16 +27,12 @@ static void stopPmuMeasurements() {
   pmu.disableBattDetection();
 }
 
-static void preparePmuForSleep() {
+static void disableUnusedPmuRails() {
   if (!pmuReady) return;
 
-  // Follow Waveshare's PhotoPainter power-consumption test: stop PMIC
-  // interrupts and measurements, enter AXP2101 sleep, then disable every
-  // nonessential output. DC1 remains on because it supplies the ESP32.
-  pmu.disableIRQ(XPOWERS_AXP2101_ALL_IRQ);
-  pmu.clearIrqStatus();
-  stopPmuMeasurements();
-  pmu.enableSleep();
+  // DC1 is the board's VCC3V3 rail and must stay on for the ESP32. ALDO3 and
+  // ALDO4 are enabled separately while the e-paper is in use. All other PMIC
+  // outputs are unused by this firmware; notably, Audio_VCC must stay off.
   pmu.disableDC2();
   pmu.disableDC3();
   pmu.disableDC4();
@@ -48,13 +44,27 @@ static void preparePmuForSleep() {
   pmu.disableCPUSLDO();
   pmu.disableDLDO1();
   pmu.disableDLDO2();
-  pmu.disableALDO4();
+}
+
+static void preparePmuForSleep() {
+  if (!pmuReady) return;
+
+  // This mirrors Waveshare's PhotoPainter power-consumption test. The panel
+  // retains its image without power, so its two active rails can also go off.
+  pmu.disableIRQ(XPOWERS_AXP2101_ALL_IRQ);
+  pmu.clearIrqStatus();
+  stopPmuMeasurements();
+  pmu.enableSleep();
+  disableUnusedPmuRails();
   pmu.disableALDO3();
+  pmu.disableALDO4();
 }
 
 static void holdSleepGpios() {
+  digitalWrite(AUDIO_CTRL_PIN, LOW);
   digitalWrite(LED_RED_PIN, HIGH);
   digitalWrite(LED_GREEN_PIN, HIGH);
+  gpio_hold_en(static_cast<gpio_num_t>(AUDIO_CTRL_PIN));
   gpio_hold_en(static_cast<gpio_num_t>(LED_RED_PIN));
   gpio_hold_en(static_cast<gpio_num_t>(LED_GREEN_PIN));
   gpio_deep_sleep_hold_en();
@@ -68,8 +78,14 @@ extern void invalidateImageCache(const char* reason);
 
 void initPower() {
   gpio_deep_sleep_hold_dis();
+  gpio_hold_dis(static_cast<gpio_num_t>(AUDIO_CTRL_PIN));
   gpio_hold_dis(static_cast<gpio_num_t>(LED_RED_PIN));
   gpio_hold_dis(static_cast<gpio_num_t>(LED_GREEN_PIN));
+
+  // AudioCTR drives the ES8311 codec enable and NS4150B speaker amplifier.
+  // This firmware uses neither audio path, so keep both in hardware shutdown.
+  pinMode(AUDIO_CTRL_PIN, OUTPUT);
+  digitalWrite(AUDIO_CTRL_PIN, LOW);
 
   pinMode(LED_RED_PIN, OUTPUT);
   pinMode(LED_GREEN_PIN, OUTPUT);
@@ -84,6 +100,7 @@ void initPower() {
   }
 
   pmu.disableSleep();
+  disableUnusedPmuRails();
   pmu.setALDO3Voltage(3300);
   pmu.enableALDO3();
   pmu.setALDO4Voltage(3300);
