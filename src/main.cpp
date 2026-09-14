@@ -149,6 +149,12 @@ void setup() {
 
   bool isSpecialFunction = forceSpecialFunctionNextBoot;
   forceSpecialFunctionNextBoot = false;
+  prefs.begin(NVS_NAMESPACE, false);
+  if (prefs.getBool(KEY_SPECIAL_FUNCTION_ONCE, false)) {
+    isSpecialFunction = true;
+    prefs.remove(KEY_SPECIAL_FUNCTION_ONCE);
+  }
+  prefs.end();
   if (wakeup == ESP_SLEEP_WAKEUP_EXT1) {
     if ((wakePins & (1ULL << BUTTON_KEY_PIN)) && keyWakeConfirmed) {
       if (wakePress == WakePress::LONGEST) {

@@ -39,6 +39,11 @@ static void handleKeyPress(WakePress press, bool restartForClick) {
   }
 
   if (press == WakePress::SECONDARY) {
+    // A runtime press on USB is followed by ESP.restart(). Persist this
+    // one-shot request because RTC data is not guaranteed across that reset.
+    prefs.begin(NVS_NAMESPACE, false);
+    prefs.putBool(KEY_SPECIAL_FUNCTION_ONCE, true);
+    prefs.end();
     forceSpecialFunctionNextBoot = true;
   }
 
