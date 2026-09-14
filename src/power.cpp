@@ -27,6 +27,31 @@ static void stopPmuMeasurements() {
   pmu.disableBattDetection();
 }
 
+static void preparePmuForSleep() {
+  if (!pmuReady) return;
+
+  // Follow Waveshare's PhotoPainter power-consumption test: stop PMIC
+  // interrupts and measurements, enter AXP2101 sleep, then disable every
+  // nonessential output. DC1 remains on because it supplies the ESP32.
+  pmu.disableIRQ(XPOWERS_AXP2101_ALL_IRQ);
+  pmu.clearIrqStatus();
+  stopPmuMeasurements();
+  pmu.enableSleep();
+  pmu.disableDC2();
+  pmu.disableDC3();
+  pmu.disableDC4();
+  pmu.disableDC5();
+  pmu.disableALDO1();
+  pmu.disableALDO2();
+  pmu.disableBLDO1();
+  pmu.disableBLDO2();
+  pmu.disableCPUSLDO();
+  pmu.disableDLDO1();
+  pmu.disableDLDO2();
+  pmu.disableALDO4();
+  pmu.disableALDO3();
+}
+
 static void holdSleepGpios() {
   digitalWrite(LED_RED_PIN, HIGH);
   digitalWrite(LED_GREEN_PIN, HIGH);
@@ -58,6 +83,7 @@ void initPower() {
     return;
   }
 
+  pmu.disableSleep();
   pmu.setALDO3Voltage(3300);
   pmu.enableALDO3();
   pmu.setALDO4Voltage(3300);
@@ -128,7 +154,7 @@ void showLowBatteryAndShutdown() {
   sendLogs();
   Serial.flush();
   display.sleep();
-  stopPmuMeasurements();
+  preparePmuForSleep();
   Wire.end();
   holdSleepGpios();
   delay(100);
@@ -171,7 +197,7 @@ void goToDeepSleep(int seconds) {
     deviceLog("USB removed: sleeping for %d seconds\n", seconds);
   }
 
-  stopPmuMeasurements();
+  preparePmuForSleep();
   Wire.end();
   holdSleepGpios();
   esp_sleep_pd_config(ESP_PD_DOMAIN_MAX, ESP_PD_OPTION_AUTO);
