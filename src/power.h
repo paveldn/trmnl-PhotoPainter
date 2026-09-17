@@ -7,4 +7,4 @@ bool isBatteryCharging();
 void showLowBatteryAndShutdown();
 void goToDeepSleep(int seconds);
 void initPower();
-
+void disconnectWiFi();

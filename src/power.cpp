@@ -41,6 +41,13 @@ extern void deviceLog(const char* fmt, ...);
 extern void sendLogs();
 extern void invalidateImageCache(const char* reason);
 
+void disconnectWiFi() {
+  if (WiFi.getMode() == WIFI_OFF) return;
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  delay(10);
+}
+
 void initPower() {
   gpio_deep_sleep_hold_dis();
   gpio_hold_dis(static_cast<gpio_num_t>(LED_RED_PIN));
@@ -140,15 +147,13 @@ void goToDeepSleep(int seconds) {
   if (seconds < 15) seconds = 16;
   lastWakeTime = (millis() - startupMillis) / 1000;
   deviceLog("Sleep: %d seconds\n", seconds);
-  sendLogs();
+  // A changed-image path sends logs and turns Wi-Fi off before the slow
+  // physical panel refresh. Do not attempt another HTTP request afterward.
+  if (WiFi.status() == WL_CONNECTED) sendLogs();
   Serial.flush();
   delay(10);
 
-  if (WiFi.getMode() != WIFI_OFF) {
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
-    delay(10);
-  }
+  disconnectWiFi();
 
   display.sleep();
 

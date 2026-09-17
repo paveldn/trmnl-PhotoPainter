@@ -13,7 +13,9 @@
 #include <esp_wifi.h>
 
 #include "api_helpers.h"
+#include "api_client.h"
 #include "display.h"
+#include "power.h"
 #include "trmnl_keys.h"
 
 static constexpr int MAX_IMAGE_SIZE = 1200000;
@@ -30,6 +32,8 @@ extern Preferences prefs;
 extern String apiBaseUrl;
 extern String apiKey;
 extern bool imageContentValid;
+extern unsigned long startupMillis;
+extern int lastWakeTime;
 
 extern void deviceLog(const char* fmt, ...);
 extern void disableWiFiPS();
@@ -301,6 +305,12 @@ bool displayImage(const char* imageUrl) {
 
   if (downloadAndDisplayImage(imageUrl)) {
     if (imageFramebufferChanged) {
+      // Network work is complete. Report this wake before shutting down the
+      // radio for the slow physical e-paper refresh.
+      deviceLog("Image decoded; turning WiFi off before display refresh\n");
+      lastWakeTime = (millis() - startupMillis) / 1000;
+      sendLogs();
+      disconnectWiFi();
       display.refresh();
       imageContentValid = true;
       deviceLog("Display done\n");
