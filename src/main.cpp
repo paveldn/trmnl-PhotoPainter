@@ -194,8 +194,18 @@ void setup() {
   float bootVoltage = getBatteryVoltage();
   bool externalPower = isExternalPowerPresent();
   if (bootVoltage > 0.5f && bootVoltage < LOW_BATTERY_VOLTAGE && !externalPower) {
-    showLowBatteryAndShutdown();
-    return;
+    // AXP2101 battery status and ADC reads are separate I2C transactions.
+    // Require a second independent low reading so a transient wake-time bus
+    // error or stale ADC register cannot strand a healthy device.
+    delay(250);
+    float confirmedVoltage = getBatteryVoltage();
+    bool confirmedExternalPower = isExternalPowerPresent();
+    if (confirmedVoltage > 0.5f && confirmedVoltage < LOW_BATTERY_VOLTAGE &&
+        !confirmedExternalPower) {
+      showLowBatteryAndShutdown();
+      return;
+    }
+    if (confirmedVoltage > 0.5f) bootVoltage = confirmedVoltage;
   }
 
   if (configuredSSID.length() == 0) {

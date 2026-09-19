@@ -16,8 +16,12 @@
 #include "hardware.h"
 
 static constexpr float LOW_BATTERY_VOLTAGE = 3.4f;
+static constexpr float MIN_VALID_BATTERY_VOLTAGE = 2.5f;
+static constexpr float MAX_VALID_BATTERY_VOLTAGE = 4.6f;
+static constexpr int LOW_BATTERY_RECHECK_SECONDS = 3600;
 static XPowersPMU pmu;
 static bool pmuReady = false;
+static bool batteryMeasurementReady = false;
 
 extern unsigned long startupMillis;
 extern int lastWakeTime;
@@ -69,6 +73,7 @@ static void stopPmuMeasurements() {
   pmu.disableBattVoltageMeasure();
   pmu.disableVbusVoltageMeasure();
   pmu.disableBattDetection();
+  batteryMeasurementReady = false;
 }
 
 static void disableDisplayRails() {
@@ -157,26 +162,58 @@ void initPower() {
   pmu.setPrechargeCurr(XPOWERS_AXP2101_PRECHARGE_50MA);
   pmu.setChargerConstantCurr(XPOWERS_AXP2101_CHG_CUR_500MA);
   pmu.setChargerTerminationCurr(XPOWERS_AXP2101_CHG_ITERM_25MA);
-  pmu.enableBattVoltageMeasure();
-  pmu.enableVbusVoltageMeasure();
-  pmu.enableBattDetection();
+  bool batteryDetectionEnabled = pmu.enableBattDetection();
+  bool batteryAdcEnabled = pmu.enableBattVoltageMeasure();
+  bool vbusAdcEnabled = pmu.enableVbusVoltageMeasure();
+  batteryMeasurementReady = batteryDetectionEnabled && batteryAdcEnabled;
+  if (!batteryMeasurementReady) {
+    deviceLog("AXP2101 battery measurement setup failed (detect=%d adc=%d)\n",
+              batteryDetectionEnabled,
+              batteryAdcEnabled);
+  }
+  if (!vbusAdcEnabled) {
+    deviceLog("AXP2101 VBUS measurement setup failed\n");
+  }
+
+  // Do not consume stale ADC registers immediately after measurement was
+  // disabled for PMIC sleep.
+  delay(100);
 }
 
 float readBatteryAvg(int samples, int delayMs) {
-  if (!pmuReady) return 0.0f;
+  if (!pmuReady || !batteryMeasurementReady) return 0.0f;
   samples = std::clamp(samples, 1, 32);
   float sum = 0.0f;
   float minV = 100.0f;
   float maxV = 0.0f;
-  for (int i = 0; i < samples; ++i) {
+  int validSamples = 0;
+  int attempts = 0;
+  const int maxAttempts = samples * 2;
+  const int requiredSamples = min(samples, max(2, (samples * 3 + 3) / 4));
+
+  while (validSamples < samples && attempts < maxAttempts) {
     float v = pmu.getBattVoltage() / 1000.0f;
-    sum += v;
-    minV = min(minV, v);
-    maxV = max(maxV, v);
-    if (i < samples - 1) delay(delayMs);
+    ++attempts;
+    if (v >= MIN_VALID_BATTERY_VOLTAGE && v <= MAX_VALID_BATTERY_VOLTAGE) {
+      sum += v;
+      minV = min(minV, v);
+      maxV = max(maxV, v);
+      ++validSamples;
+    }
+    if (validSamples < samples && attempts < maxAttempts) delay(delayMs);
   }
-  if (samples >= 5) return (sum - minV - maxV) / (samples - 2);
-  return sum / samples;
+
+  if (validSamples < requiredSamples) {
+    deviceLog("Battery measurement unavailable: %d/%d valid samples\n",
+              validSamples,
+              attempts);
+    return 0.0f;
+  }
+
+  if (validSamples >= 5) {
+    return (sum - minV - maxV) / (validSamples - 2);
+  }
+  return sum / validSamples;
 }
 
 float getBatteryVoltage() {
@@ -203,6 +240,20 @@ bool isBatteryCharging() {
   return pmu.isBatteryConnect() && pmu.isCharging();
 }
 
+static void configureDeepSleepWakeSources(int seconds) {
+  pinMode(BUTTON_KEY_PIN, INPUT_PULLUP);
+  rtc_gpio_pullup_en(static_cast<gpio_num_t>(BUTTON_KEY_PIN));
+  rtc_gpio_pulldown_dis(static_cast<gpio_num_t>(BUTTON_KEY_PIN));
+
+  // Never arm an already-low KEY: it would create an immediate wake loop.
+  if (digitalRead(BUTTON_KEY_PIN) == HIGH) {
+    esp_sleep_enable_ext1_wakeup(1ULL << BUTTON_KEY_PIN, ESP_EXT1_WAKEUP_ANY_LOW);
+  }
+  if (seconds > 0) {
+    esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(seconds) * 1000000ULL);
+  }
+}
+
 void showLowBatteryAndShutdown() {
   invalidateImageCache("low_battery_screen");
   display.clear(PP_WHITE);
@@ -219,8 +270,11 @@ void showLowBatteryAndShutdown() {
   sendLogs();
   Serial.flush();
   display.sleep();
-  stopPmuMeasurements();
-  disableDisplayRails();
+  configureDeepSleepWakeSources(LOW_BATTERY_RECHECK_SECONDS);
+  if (!preparePmuForSleep()) {
+    stopPmuMeasurements();
+    disableDisplayRails();
+  }
   Wire.end();
   holdSleepGpios();
   delay(100);
@@ -261,24 +315,13 @@ void goToDeepSleep(int seconds) {
     deviceLog("USB removed: sleeping for %d seconds\n", seconds);
   }
 
-  pinMode(BUTTON_KEY_PIN, INPUT_PULLUP);
-
   // GPIO5 is AXP2101 SYS_OUT on this board, not the physical PWR button.
   // SYS_OUT changes state during a USB-to-battery transition and must never
   // be used as an ESP32 wake source. The PMIC handles the PWR button itself.
   // BOOT/GPIO0 is intentionally excluded too: a false low would put the
   // device into the persistent ROM downloader with no way to recover on
   // battery. BOOT remains available while the firmware is awake on USB.
-  rtc_gpio_pullup_en(static_cast<gpio_num_t>(BUTTON_KEY_PIN));
-  rtc_gpio_pulldown_dis(static_cast<gpio_num_t>(BUTTON_KEY_PIN));
-
-  // Never arm an already-low KEY: it would wake the ESP32 immediately and
-  // create a continuous fetch/display loop. The timer remains armed even if
-  // KEY is held during sleep entry.
-  if (digitalRead(BUTTON_KEY_PIN) == HIGH) {
-    esp_sleep_enable_ext1_wakeup(1ULL << BUTTON_KEY_PIN, ESP_EXT1_WAKEUP_ANY_LOW);
-  }
-  esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(seconds) * 1000000ULL);
+  configureDeepSleepWakeSources(seconds);
 
   // Configure both ESP32 wake sources before putting the PMIC to sleep. On
   // wake, wakePmu() restores its outputs before the first I2C transaction.
