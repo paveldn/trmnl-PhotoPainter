@@ -19,12 +19,98 @@ static constexpr float LOW_BATTERY_VOLTAGE = 3.4f;
 static XPowersPMU pmu;
 static bool pmuReady = false;
 
+extern unsigned long startupMillis;
+extern int lastWakeTime;
+extern void deviceLog(const char* fmt, ...);
+extern void sendLogs();
+extern void invalidateImageCache(const char* reason);
+
+static void wakePmu() {
+  // AXP2101 turns its I2C interface off in PMIC sleep. Waveshare's reference
+  // firmware wakes it by holding IRQ low for more than 16 ms before I2C init.
+  pinMode(AXP2101_IRQ_PIN, OUTPUT);
+  digitalWrite(AXP2101_IRQ_PIN, LOW);
+  delay(100);
+  digitalWrite(AXP2101_IRQ_PIN, HIGH);
+  delay(200);
+  pinMode(AXP2101_IRQ_PIN, INPUT_PULLUP);
+}
+
+static void recoverI2cBus() {
+  // A slave interrupted by deep sleep can hold SDA low. Clock out a pending
+  // byte and generate STOP before handing the pins to Wire.
+  pinMode(I2C_SCL_PIN, OUTPUT_OPEN_DRAIN);
+  pinMode(I2C_SDA_PIN, OUTPUT_OPEN_DRAIN);
+  digitalWrite(I2C_SCL_PIN, HIGH);
+  digitalWrite(I2C_SDA_PIN, HIGH);
+  delayMicroseconds(5);
+
+  for (int i = 0; i < 9; ++i) {
+    digitalWrite(I2C_SCL_PIN, LOW);
+    delayMicroseconds(5);
+    digitalWrite(I2C_SCL_PIN, HIGH);
+    delayMicroseconds(5);
+  }
+
+  digitalWrite(I2C_SDA_PIN, LOW);
+  delayMicroseconds(5);
+  digitalWrite(I2C_SCL_PIN, HIGH);
+  delayMicroseconds(5);
+  digitalWrite(I2C_SDA_PIN, HIGH);
+  delayMicroseconds(5);
+
+  pinMode(I2C_SCL_PIN, INPUT_PULLUP);
+  pinMode(I2C_SDA_PIN, INPUT_PULLUP);
+}
+
 static void stopPmuMeasurements() {
   if (!pmuReady) return;
 
   pmu.disableBattVoltageMeasure();
   pmu.disableVbusVoltageMeasure();
   pmu.disableBattDetection();
+}
+
+static void disableDisplayRails() {
+  if (!pmuReady) return;
+  pmu.disableALDO4();
+  pmu.disableALDO3();
+}
+
+static bool preparePmuForSleep() {
+  if (!pmuReady) return false;
+
+  pmu.disableIRQ(XPOWERS_AXP2101_ALL_IRQ);
+  pmu.clearIrqStatus();
+
+  int sleepControl = pmu.readRegister(0x26);
+  if (sleepControl < 0) {
+    deviceLog("AXP2101 sleep control read failed\n");
+    return false;
+  }
+
+  // Restore the pre-sleep regulator configuration when IRQ wakes the PMIC,
+  // do not pull PWROK low, and accept IRQ-low as the wake event.
+  if (!(sleepControl & 0x04)) {
+    pmu.wakeupControl(XPOWERS_AXP2101_WAKEUP_DC_DLO_SELECT, true);
+  }
+  if (sleepControl & 0x08) {
+    pmu.wakeupControl(XPOWERS_AXP2101_WAKEUP_PWROK_TO_LOW, false);
+  }
+  if (!(sleepControl & 0x10)) {
+    pmu.wakeupControl(XPOWERS_AXP2101_WAKEUP_IRQ_PIN_TO_LOW, true);
+  }
+
+  stopPmuMeasurements();
+  if (!pmu.enableSleep()) {
+    deviceLog("AXP2101 sleep enable failed\n");
+    return false;
+  }
+
+  // These two outputs are tied together as EPD_VCC on the schematic. DCDC1,
+  // which powers the ESP32 and KEY wake circuitry, remains enabled.
+  disableDisplayRails();
+  return true;
 }
 
 static void holdSleepGpios() {
@@ -34,12 +120,6 @@ static void holdSleepGpios() {
   gpio_hold_en(static_cast<gpio_num_t>(LED_GREEN_PIN));
   gpio_deep_sleep_hold_en();
 }
-
-extern unsigned long startupMillis;
-extern int lastWakeTime;
-extern void deviceLog(const char* fmt, ...);
-extern void sendLogs();
-extern void invalidateImageCache(const char* reason);
 
 void disconnectWiFi() {
   if (WiFi.getMode() == WIFI_OFF) return;
@@ -58,7 +138,9 @@ void initPower() {
   digitalWrite(LED_RED_PIN, HIGH);
   digitalWrite(LED_GREEN_PIN, HIGH);
 
-  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  wakePmu();
+  recoverI2cBus();
+  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN, 100000);
   pmuReady = pmu.begin(Wire, AXP2101_SLAVE_ADDRESS, I2C_SDA_PIN, I2C_SCL_PIN);
   if (!pmuReady) {
     deviceLog("AXP2101 init failed\n");
@@ -69,6 +151,8 @@ void initPower() {
   pmu.enableALDO3();
   pmu.setALDO4Voltage(3300);
   pmu.enableALDO4();
+  // Match the conservative settling interval used by the working reference.
+  delay(500);
   pmu.setVbusCurrentLimit(XPOWERS_AXP2101_VBUS_CUR_LIM_2000MA);
   pmu.setPrechargeCurr(XPOWERS_AXP2101_PRECHARGE_50MA);
   pmu.setChargerConstantCurr(XPOWERS_AXP2101_CHG_CUR_500MA);
@@ -136,6 +220,7 @@ void showLowBatteryAndShutdown() {
   Serial.flush();
   display.sleep();
   stopPmuMeasurements();
+  disableDisplayRails();
   Wire.end();
   holdSleepGpios();
   delay(100);
@@ -176,10 +261,6 @@ void goToDeepSleep(int seconds) {
     deviceLog("USB removed: sleeping for %d seconds\n", seconds);
   }
 
-  stopPmuMeasurements();
-  Wire.end();
-  holdSleepGpios();
-  esp_sleep_pd_config(ESP_PD_DOMAIN_MAX, ESP_PD_OPTION_AUTO);
   pinMode(BUTTON_KEY_PIN, INPUT_PULLUP);
 
   // GPIO5 is AXP2101 SYS_OUT on this board, not the physical PWR button.
@@ -197,5 +278,13 @@ void goToDeepSleep(int seconds) {
   if (digitalRead(BUTTON_KEY_PIN) == HIGH) {
     esp_sleep_enable_ext1_wakeup(1ULL << BUTTON_KEY_PIN, ESP_EXT1_WAKEUP_ANY_LOW);
   }
-  esp_deep_sleep(static_cast<uint64_t>(seconds) * 1000000ULL);
+  esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(seconds) * 1000000ULL);
+
+  // Configure both ESP32 wake sources before putting the PMIC to sleep. On
+  // wake, wakePmu() restores its outputs before the first I2C transaction.
+  preparePmuForSleep();
+  Wire.end();
+  holdSleepGpios();
+  esp_sleep_pd_config(ESP_PD_DOMAIN_MAX, ESP_PD_OPTION_AUTO);
+  esp_deep_sleep_start();
 }
