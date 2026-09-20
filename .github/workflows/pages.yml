@@ -29,8 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Resolve Firmware Source
-        id: source
+      - name: Download Released Firmware Catalog
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -38,65 +37,46 @@ jobs:
           EVENT_TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
-          tag="${INPUT_TAG:-${EVENT_TAG:-}}"
-          if [[ -z "$tag" ]]; then
-            tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases" \
-              --jq 'map(select(.draft == false)) | sort_by(.published_at) | reverse | .[0].tag_name // ""')"
-          fi
-          if [[ -n "$tag" ]]; then
+          mkdir -p dist/releases
+          gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            > dist/releases-api.json
+          jq -r '.[][] | select(.draft == false) |
+            .tag_name as $tag |
+            .assets[]? |
+            select(.name == "photopainter.factory.bin") |
+            [$tag, (.id | tostring)] | @tsv' dist/releases-api.json |
+          while IFS=$'\t' read -r tag asset_id; do
             if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-              echo "Invalid release tag: $tag" >&2
+              echo "Skipping unsupported release tag: $tag"
+              continue
+            fi
+            mkdir -p "dist/releases/$tag"
+            gh api -H "Accept: application/octet-stream" \
+              "repos/${GITHUB_REPOSITORY}/releases/assets/$asset_id" \
+              > "dist/releases/$tag/photopainter.factory.bin"
+          done
+          requested_tag="${INPUT_TAG:-${EVENT_TAG:-}}"
+          if [[ -n "$requested_tag" ]]; then
+            if [[ ! "$requested_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "Invalid requested release tag: $requested_tag" >&2
               exit 1
             fi
-            echo "release_tag=$tag" >> "$GITHUB_OUTPUT"
-            echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
-            echo "use_release=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "use_release=false" >> "$GITHUB_OUTPUT"
+            if [[ ! -f "dist/releases/$requested_tag/photopainter.factory.bin" ]]; then
+              echo "Requested release has no photopainter.factory.bin asset: $requested_tag" >&2
+              exit 1
+            fi
           fi
-
-      - name: Download Released Firmware
-        if: steps.source.outputs.use_release == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.source.outputs.release_tag }}
-        run: |
-          mkdir -p dist/release
-          gh release download "$RELEASE_TAG" \
-            --pattern photopainter.factory.bin \
-            --dir dist/release
-
-      - uses: actions/cache@v5
-        if: steps.source.outputs.use_release != 'true'
-        with:
-          path: |
-            ~/.cache/pip
-            ~/.platformio
-          key: pio-${{ hashFiles('platformio.ini') }}
 
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
-      - name: Install PlatformIO
-        if: steps.source.outputs.use_release != 'true'
-        run: pip install platformio
-
-      - name: Build Firmware
-        if: steps.source.outputs.use_release != 'true'
-        run: pio run
-
-      - name: Prepare Browser Installer From Source
-        if: steps.source.outputs.use_release != 'true'
-        run: python scripts/prepare_web_installer.py
-
-      - name: Prepare Browser Installer From Release
-        if: steps.source.outputs.use_release == 'true'
+      - name: Prepare Browser Installer
         run: >-
           python scripts/prepare_web_installer.py
-          --firmware dist/release/photopainter.factory.bin
-          --version "${{ steps.source.outputs.version }}"
+          --releases-json dist/releases-api.json
+          --firmware-dir dist/releases
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v6
