@@ -19,6 +19,8 @@ static constexpr float LOW_BATTERY_VOLTAGE = 3.4f;
 static constexpr float MIN_VALID_BATTERY_VOLTAGE = 2.5f;
 static constexpr float MAX_VALID_BATTERY_VOLTAGE = 4.6f;
 static constexpr int LOW_BATTERY_RECHECK_SECONDS = 3600;
+static constexpr uint8_t SHTC3_I2C_ADDRESS = 0x70;
+static constexpr uint16_t SHTC3_SLEEP_COMMAND = 0xB098;
 static XPowersPMU pmu;
 static bool pmuReady = false;
 static bool batteryMeasurementReady = false;
@@ -82,8 +84,27 @@ static void disableDisplayRails() {
   pmu.disableALDO3();
 }
 
+static void sleepShtc3() {
+  // The SHTC3 shares DCDC1 with the ESP32 and cannot be switched off without
+  // also losing timer/KEY wake. Match the PhotoFrame reference by putting the
+  // sensor into its own low-power state while I2C is still available.
+  Wire.beginTransmission(SHTC3_I2C_ADDRESS);
+  Wire.write(static_cast<uint8_t>(SHTC3_SLEEP_COMMAND >> 8));
+  Wire.write(static_cast<uint8_t>(SHTC3_SLEEP_COMMAND & 0xFF));
+  uint8_t result = Wire.endTransmission();
+  if (result == 0) {
+    deviceLog("SHTC3 sleep enabled\n");
+  } else {
+    // The sensor may already be asleep after a previous deep-sleep cycle.
+    // This optimization is best-effort and must never block PMIC sleep.
+    deviceLog("SHTC3 sleep command unavailable (%u)\n", result);
+  }
+}
+
 static bool preparePmuForSleep() {
   if (!pmuReady) return false;
+
+  sleepShtc3();
 
   pmu.disableIRQ(XPOWERS_AXP2101_ALL_IRQ);
   pmu.clearIrqStatus();
