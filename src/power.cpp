@@ -95,6 +95,15 @@ static void disableUnusedAudioRail() {
   pmu.disableALDO2();
 }
 
+static void disableUnusedDcdc2Rail() {
+  if (!pmuReady) return;
+  bool wasEnabled = pmu.isEnableDC2();
+  deviceLog("DCDC2 before sleep: %s\n", wasEnabled ? "on" : "off");
+  if (wasEnabled && !pmu.disableDC2()) {
+    deviceLog("DCDC2 sleep disable failed\n");
+  }
+}
+
 static void sleepShtc3() {
   // The SHTC3 shares DCDC1 with the ESP32 and cannot be switched off without
   // also losing timer/KEY wake. Match the PhotoFrame reference by putting the
@@ -146,6 +155,7 @@ static bool preparePmuForSleep() {
 
   // These two outputs are tied together as EPD_VCC on the schematic. DCDC1,
   // which powers the ESP32 and KEY wake circuitry, remains enabled.
+  disableUnusedDcdc2Rail();
   disableUnusedAudioRail();
   disableDisplayRails();
   return true;
