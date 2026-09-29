@@ -88,6 +88,13 @@ static void disableDisplayRails() {
   pmu.disableALDO3();
 }
 
+static void disableUnusedAudioRail() {
+  if (!pmuReady) return;
+  // ALDO2 supplies the unused audio codecs. The amplifier itself is powered
+  // from VSYS and is kept off separately through its active-high enable pin.
+  pmu.disableALDO2();
+}
+
 static void sleepShtc3() {
   // The SHTC3 shares DCDC1 with the ESP32 and cannot be switched off without
   // also losing timer/KEY wake. Match the PhotoFrame reference by putting the
@@ -139,13 +146,16 @@ static bool preparePmuForSleep() {
 
   // These two outputs are tied together as EPD_VCC on the schematic. DCDC1,
   // which powers the ESP32 and KEY wake circuitry, remains enabled.
+  disableUnusedAudioRail();
   disableDisplayRails();
   return true;
 }
 
 static void holdSleepGpios() {
+  digitalWrite(AUDIO_AMP_ENABLE_PIN, LOW);
   digitalWrite(LED_RED_PIN, HIGH);
   digitalWrite(LED_GREEN_PIN, HIGH);
+  gpio_hold_en(static_cast<gpio_num_t>(AUDIO_AMP_ENABLE_PIN));
   gpio_hold_en(static_cast<gpio_num_t>(LED_RED_PIN));
   gpio_hold_en(static_cast<gpio_num_t>(LED_GREEN_PIN));
   gpio_deep_sleep_hold_en();
@@ -169,9 +179,12 @@ void disconnectWiFi() {
 
 void initPower() {
   gpio_deep_sleep_hold_dis();
+  gpio_hold_dis(static_cast<gpio_num_t>(AUDIO_AMP_ENABLE_PIN));
   gpio_hold_dis(static_cast<gpio_num_t>(LED_RED_PIN));
   gpio_hold_dis(static_cast<gpio_num_t>(LED_GREEN_PIN));
 
+  pinMode(AUDIO_AMP_ENABLE_PIN, OUTPUT);
+  digitalWrite(AUDIO_AMP_ENABLE_PIN, LOW);
   pinMode(LED_RED_PIN, OUTPUT);
   pinMode(LED_GREEN_PIN, OUTPUT);
   digitalWrite(LED_RED_PIN, HIGH);
