@@ -1,6 +1,8 @@
 # PhotoPainter TRMNL Firmware
 
 [![CI](https://github.com/paveldn/trmnl-PhotoPainter/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/paveldn/trmnl-PhotoPainter/actions/workflows/build.yml)
+[![Latest Release](https://img.shields.io/github/v/release/paveldn/trmnl-PhotoPainter?label=release)](https://github.com/paveldn/trmnl-PhotoPainter/releases/latest)
+[![Web Installer](https://img.shields.io/badge/Web_Installer-open-blue?logo=googlechrome&logoColor=white)](https://paveldn.github.io/trmnl-PhotoPainter/)
 
 Custom TRMNL BYOD client firmware for the Waveshare ESP32-S3 PhotoPainter.
 
