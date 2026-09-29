@@ -11,6 +11,10 @@
 #include <algorithm>
 #include <cmath>
 
+#if CONFIG_SOC_USB_SERIAL_JTAG_SUPPORTED
+#include <hal/usb_serial_jtag_ll.h>
+#endif
+
 #include "display.h"
 #include "button.h"
 #include "hardware.h"
@@ -145,6 +149,15 @@ static void holdSleepGpios() {
   gpio_hold_en(static_cast<gpio_num_t>(LED_RED_PIN));
   gpio_hold_en(static_cast<gpio_num_t>(LED_GREEN_PIN));
   gpio_deep_sleep_hold_en();
+}
+
+static void disableUsbSerialJtagPhyForSleep() {
+#if CONFIG_SOC_USB_SERIAL_JTAG_SUPPORTED
+  // Match the PhotoFrame reference: leaving the native USB PHY pads enabled
+  // costs about 250 uA in deep sleep. This is deliberately the last hardware
+  // operation before sleep; USB-powered operation never reaches this path.
+  usb_serial_jtag_ll_phy_enable_pad(false);
+#endif
 }
 
 void disconnectWiFi() {
@@ -300,6 +313,7 @@ void showLowBatteryAndShutdown() {
   holdSleepGpios();
   delay(100);
   esp_sleep_pd_config(ESP_PD_DOMAIN_MAX, ESP_PD_OPTION_AUTO);
+  disableUsbSerialJtagPhyForSleep();
   esp_deep_sleep_start();
 }
 
@@ -350,5 +364,6 @@ void goToDeepSleep(int seconds) {
   Wire.end();
   holdSleepGpios();
   esp_sleep_pd_config(ESP_PD_DOMAIN_MAX, ESP_PD_OPTION_AUTO);
+  disableUsbSerialJtagPhyForSleep();
   esp_deep_sleep_start();
 }
