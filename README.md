@@ -1,5 +1,7 @@
 # PhotoPainter TRMNL Firmware
 
+[![CI](https://github.com/paveldn/trmnl-PhotoPainter/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/paveldn/trmnl-PhotoPainter/actions/workflows/build.yml)
+
 Custom TRMNL BYOD client firmware for the Waveshare ESP32-S3 PhotoPainter.
 
 This project ports the TRMNL client flow from `trmnl-m5paper` to the Waveshare
