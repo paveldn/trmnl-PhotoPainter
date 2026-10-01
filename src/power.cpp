@@ -126,6 +126,28 @@ static void disableUnusedDcdc3To5Rails() {
   }
 }
 
+static void disableUnusedAldo1AndBldoRails() {
+  if (!pmuReady) return;
+
+  bool aldo1Enabled = pmu.isEnableALDO1();
+  bool bldo1Enabled = pmu.isEnableBLDO1();
+  bool bldo2Enabled = pmu.isEnableBLDO2();
+  deviceLog("ALDO1/BLDO1-2 before sleep: %s/%s/%s\n",
+            aldo1Enabled ? "on" : "off",
+            bldo1Enabled ? "on" : "off",
+            bldo2Enabled ? "on" : "off");
+
+  if (aldo1Enabled && !pmu.disableALDO1()) {
+    deviceLog("ALDO1 sleep disable failed\n");
+  }
+  if (bldo1Enabled && !pmu.disableBLDO1()) {
+    deviceLog("BLDO1 sleep disable failed\n");
+  }
+  if (bldo2Enabled && !pmu.disableBLDO2()) {
+    deviceLog("BLDO2 sleep disable failed\n");
+  }
+}
+
 static void sleepShtc3() {
   // The SHTC3 shares DCDC1 with the ESP32 and cannot be switched off without
   // also losing timer/KEY wake. Match the PhotoFrame reference by putting the
@@ -179,6 +201,7 @@ static bool preparePmuForSleep() {
   // which powers the ESP32 and KEY wake circuitry, remains enabled.
   disableUnusedDcdc2Rail();
   disableUnusedDcdc3To5Rails();
+  disableUnusedAldo1AndBldoRails();
   disableUnusedAudioRail();
   disableDisplayRails();
   return true;
