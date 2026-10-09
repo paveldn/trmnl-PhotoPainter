@@ -382,6 +382,7 @@ static void configureDeepSleepWakeSources(int seconds) {
 
 void showLowBatteryAndShutdown() {
   invalidateImageCache("low_battery_screen");
+  initDisplay();
   display.clear(PP_WHITE);
   display.setTextColor(PP_BLACK);
   display.setTextSize(3);

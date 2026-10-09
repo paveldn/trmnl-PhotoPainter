@@ -142,7 +142,9 @@ void setup() {
   setCpuFrequencyMhz(80);
   btStop();
   initPower();
-  initDisplay();
+  // Initialize the panel lazily only when this wake actually needs to draw.
+  // Most timer wakes keep the existing image and can avoid the panel reset,
+  // power-on commands, BUSY waits, and framebuffer allocation entirely.
   deviceLog("[Boot #%d] Wake: %s\n", bootCount, wakeStr);
 
   loadSettings();

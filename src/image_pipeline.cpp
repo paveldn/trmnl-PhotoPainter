@@ -419,6 +419,16 @@ bool downloadAndDisplayImage(const char* url) {
     return false;
   }
 
+  // Do not initialize the panel on ordinary unchanged-image wakes. Reaching
+  // this point means a complete new image was downloaded and must be decoded
+  // into the display framebuffer.
+  if (!display.begin()) {
+    deviceLog("Display allocation/init failed\n");
+    imageDisplayError = "Display initialization failed";
+    free(buffer);
+    return false;
+  }
+
   bool success = false;
   if (bytesRead >= 2 && buffer[0] == 'B' && buffer[1] == 'M') {
     success = decodeBmpToDisplay(buffer, bytesRead);

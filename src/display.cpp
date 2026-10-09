@@ -215,6 +215,11 @@ uint8_t PhotoPainterDisplay::mapGfxColor(uint16_t color) const {
 }
 
 static void drawCenteredLines(const String& title, const String& message) {
+  if (!display.begin()) {
+    deviceLog("Display allocation/init failed\n");
+    return;
+  }
+
   display.clear(PP_WHITE);
   display.setTextColor(PP_BLACK);
   display.setTextSize(3);
