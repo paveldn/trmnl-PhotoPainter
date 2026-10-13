@@ -38,6 +38,24 @@ extern int lastWakeTime;
 extern void deviceLog(const char* fmt, ...);
 extern void disableWiFiPS();
 
+class ScopedCpuFrequency {
+ public:
+  ScopedCpuFrequency(uint32_t activeMhz, uint32_t restoreMhz)
+      : restoreMhz_(restoreMhz) {
+    setCpuFrequencyMhz(activeMhz);
+  }
+
+  ~ScopedCpuFrequency() {
+    setCpuFrequencyMhz(restoreMhz_);
+  }
+
+  ScopedCpuFrequency(const ScopedCpuFrequency&) = delete;
+  ScopedCpuFrequency& operator=(const ScopedCpuFrequency&) = delete;
+
+ private:
+  uint32_t restoreMhz_;
+};
+
 String getWifiBand() {
   wifi_bandwidth_t bandwidth;
   if (esp_wifi_get_bandwidth(WIFI_IF_STA, &bandwidth) == ESP_OK) {
@@ -419,6 +437,17 @@ bool downloadAndDisplayImage(const char* url) {
     return false;
   }
 
+#ifndef ENABLE_SERVER_LOGS
+  // The complete image is now in RAM and no further network work is needed.
+  // Optimize battery operation only. USB-powered operation keeps the previous
+  // Wi-Fi lifecycle so runtime KEY refresh and flashing behavior are unchanged.
+  // Logging builds also keep Wi-Fi until displayImage() uploads diagnostics.
+  if (!isExternalPowerPresent()) {
+    deviceLog("Image downloaded; turning WiFi off before display init and decode\n");
+    disconnectWiFi();
+  }
+#endif
+
   // Do not initialize the panel on ordinary unchanged-image wakes. Reaching
   // this point means a complete new image was downloaded and must be decoded
   // into the display framebuffer.
@@ -430,35 +459,48 @@ bool downloadAndDisplayImage(const char* url) {
   }
 
   bool success = false;
-  if (bytesRead >= 2 && buffer[0] == 'B' && buffer[1] == 'M') {
-    success = decodeBmpToDisplay(buffer, bytesRead);
-    if (success) {
-      imageFramebufferChanged = true;
+  const unsigned long decodeStarted = millis();
+  uint32_t decodeFrequencyMhz = 0;
+  {
+    // Image decoding is CPU-bound. Run only this phase at 160 MHz, then
+    // restore 80 MHz before Wi-Fi shutdown, SPI transfer, and panel refresh.
+    ScopedCpuFrequency decodeFrequency(160, 80);
+    decodeFrequencyMhz = getCpuFrequencyMhz();
+
+    if (bytesRead >= 2 && buffer[0] == 'B' && buffer[1] == 'M') {
+      success = decodeBmpToDisplay(buffer, bytesRead);
+      if (success) {
+        imageFramebufferChanged = true;
+      } else {
+        imageDisplayError = "BMP decode failed\nUse 800x480 BMP\nCheck server output";
+      }
+    } else if (bytesRead >= 4 && buffer[0] == 0x89 && buffer[1] == 0x50 &&
+               buffer[2] == 0x4E && buffer[3] == 0x47) {
+      success = decodePngToDisplay(buffer, bytesRead);
+      if (success) {
+        imageFramebufferChanged = true;
+      } else {
+        imageDisplayError = "PNG decode failed\nUse an 800x480 image\nCheck server output";
+      }
+    } else if (bytesRead >= 2 && buffer[0] == 0xFF && buffer[1] == 0xD8) {
+      success = decodeJpegToDisplay(buffer, bytesRead);
+      if (success) {
+        imageFramebufferChanged = true;
+      } else {
+        imageDisplayError = "JPEG decode failed\nUse an 800x480 image\nCheck server output";
+      }
     } else {
-      imageDisplayError = "BMP decode failed\nUse 800x480 BMP\nCheck server output";
+      deviceLog("Unsupported image format: %02X %02X %02X %02X, type=%s\n",
+                bytesRead > 0 ? buffer[0] : 0, bytesRead > 1 ? buffer[1] : 0,
+                bytesRead > 2 ? buffer[2] : 0, bytesRead > 3 ? buffer[3] : 0,
+                contentType.c_str());
+      imageDisplayError = "Image format error\nUse PNG, JPEG, or BMP\nCheck server output";
     }
-  } else if (bytesRead >= 4 && buffer[0] == 0x89 && buffer[1] == 0x50 &&
-             buffer[2] == 0x4E && buffer[3] == 0x47) {
-    success = decodePngToDisplay(buffer, bytesRead);
-    if (success) {
-      imageFramebufferChanged = true;
-    } else {
-      imageDisplayError = "PNG decode failed\nUse an 800x480 image\nCheck server output";
-    }
-  } else if (bytesRead >= 2 && buffer[0] == 0xFF && buffer[1] == 0xD8) {
-    success = decodeJpegToDisplay(buffer, bytesRead);
-    if (success) {
-      imageFramebufferChanged = true;
-    } else {
-      imageDisplayError = "JPEG decode failed\nUse an 800x480 image\nCheck server output";
-    }
-  } else {
-    deviceLog("Unsupported image format: %02X %02X %02X %02X, type=%s\n",
-              bytesRead > 0 ? buffer[0] : 0, bytesRead > 1 ? buffer[1] : 0,
-              bytesRead > 2 ? buffer[2] : 0, bytesRead > 3 ? buffer[3] : 0,
-              contentType.c_str());
-    imageDisplayError = "Image format error\nUse PNG, JPEG, or BMP\nCheck server output";
   }
+  deviceLog("Image decode: %lums at %lu MHz; restored to %lu MHz\n",
+            millis() - decodeStarted,
+            static_cast<unsigned long>(decodeFrequencyMhz),
+            static_cast<unsigned long>(getCpuFrequencyMhz()));
 
   if (success && (respEtag.length() > 0 || respLast.length() > 0)) {
     prefs.begin(NVS_NAMESPACE, false);
