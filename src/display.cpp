@@ -100,6 +100,7 @@ bool PhotoPainterDisplay::begin() {
 
   sendCommand(0x04);
   waitBusy();
+  SPI.endTransaction();
   begun_ = true;
   return true;
 }
@@ -111,6 +112,7 @@ void PhotoPainterDisplay::clear(uint8_t color) {
 
 void PhotoPainterDisplay::refresh() {
   if (!begun_ && !begin()) return;
+  SPI.beginTransaction(SPISettings(10000000, MSBFIRST, SPI_MODE0));
   sendCommand(0x10);
   sendBuffer(buffer_, framebufferSize());
 
@@ -130,13 +132,16 @@ void PhotoPainterDisplay::refresh() {
   sendCommand(0x02);
   sendData(0x00);
   waitBusy();
+  SPI.endTransaction();
 }
 
 void PhotoPainterDisplay::sleep() {
   if (!begun_) return;
+  SPI.beginTransaction(SPISettings(10000000, MSBFIRST, SPI_MODE0));
   sendCommand(0x02);
   sendData(0x00);
   waitBusy();
+  SPI.endTransaction();
 }
 
 uint8_t* PhotoPainterDisplay::framebuffer() {
