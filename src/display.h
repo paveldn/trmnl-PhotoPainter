@@ -30,7 +30,8 @@ public:
 
 private:
   void resetPanel();
-  void waitBusy();
+  void waitBusy(bool allowLightSleep = false);
+  void waitBusyPolling(unsigned long started);
   void sendCommand(uint8_t command);
   void sendData(uint8_t data);
   void sendBuffer(const uint8_t* data, size_t len);

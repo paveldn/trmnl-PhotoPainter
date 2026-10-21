@@ -1,7 +1,44 @@
 #include "display.h"
 
 #include <SPI.h>
+#include <WiFi.h>
+#include <driver/gpio.h>
 #include <esp_heap_caps.h>
+#include <esp_sleep.h>
+
+#include "power.h"
+
+namespace {
+
+constexpr unsigned long EPD_BUSY_TIMEOUT_MS = 120000UL;
+
+class ScopedCpuFrequency {
+ public:
+  explicit ScopedCpuFrequency(uint32_t activeMhz)
+      : restoreMhz_(getCpuFrequencyMhz()) {
+    setCpuFrequencyMhz(activeMhz);
+  }
+
+  ~ScopedCpuFrequency() {
+    if (getCpuFrequencyMhz() != restoreMhz_) {
+      setCpuFrequencyMhz(restoreMhz_);
+    }
+  }
+
+  ScopedCpuFrequency(const ScopedCpuFrequency&) = delete;
+  ScopedCpuFrequency& operator=(const ScopedCpuFrequency&) = delete;
+
+ private:
+  uint32_t restoreMhz_;
+};
+
+void disableEpdLightSleepWake() {
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_GPIO);
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
+  gpio_wakeup_disable(static_cast<gpio_num_t>(EPD_BUSY_PIN));
+}
+
+}  // namespace
 
 PhotoPainterDisplay display;
 
@@ -127,7 +164,13 @@ void PhotoPainterDisplay::refresh() {
 
   sendCommand(0x12);
   sendData(0x00);
-  waitBusy();
+
+  // No SPI transfer is active while the panel performs its long physical
+  // refresh. Releasing the transaction also makes CPU clock changes safe if
+  // the Light-sleep path has to fall back to reduced-clock polling.
+  SPI.endTransaction();
+  waitBusy(true);
+  SPI.beginTransaction(SPISettings(10000000, MSBFIRST, SPI_MODE0));
 
   sendCommand(0x02);
   sendData(0x00);
@@ -178,15 +221,89 @@ void PhotoPainterDisplay::resetPanel() {
   delay(50);
 }
 
-void PhotoPainterDisplay::waitBusy() {
-  const unsigned long started = millis();
+void PhotoPainterDisplay::waitBusyPolling(unsigned long started) {
+  // This path is normally used for short panel initialization/power waits.
+  // If Light-sleep setup fails, 20 MHz limits the cost of the long wait while
+  // still preserving the original polling behavior and timeout.
+  ScopedCpuFrequency pollingFrequency(20);
   while (digitalRead(EPD_BUSY_PIN) == LOW) {
-    if (millis() - started > 120000UL) {
+    if (millis() - started > EPD_BUSY_TIMEOUT_MS) {
       deviceLog("EPD busy timeout\n");
       return;
     }
     delay(10);
   }
+}
+
+void PhotoPainterDisplay::waitBusy(bool allowLightSleep) {
+  const unsigned long started = millis();
+
+  // GPIO Light-sleep wake is deliberately limited to battery operation after
+  // Wi-Fi is fully off. USB operation retains normal polling so native USB,
+  // runtime buttons, and flashing behavior remain unchanged.
+  if (!allowLightSleep || isExternalPowerPresent() || WiFi.getMode() != WIFI_OFF) {
+    while (digitalRead(EPD_BUSY_PIN) == LOW) {
+      if (millis() - started > EPD_BUSY_TIMEOUT_MS) {
+        deviceLog("EPD busy timeout\n");
+        return;
+      }
+      delay(10);
+    }
+    return;
+  }
+
+  if (digitalRead(EPD_BUSY_PIN) == HIGH) return;
+
+  const gpio_num_t busyPin = static_cast<gpio_num_t>(EPD_BUSY_PIN);
+  esp_err_t gpioResult = gpio_wakeup_enable(busyPin, GPIO_INTR_HIGH_LEVEL);
+  esp_err_t wakeResult = gpioResult == ESP_OK
+                             ? esp_sleep_enable_gpio_wakeup()
+                             : gpioResult;
+  unsigned long elapsed = millis() - started;
+  uint64_t remainingUs = elapsed < EPD_BUSY_TIMEOUT_MS
+                             ? static_cast<uint64_t>(EPD_BUSY_TIMEOUT_MS - elapsed) * 1000ULL
+                             : 1ULL;
+  esp_err_t timerResult = wakeResult == ESP_OK
+                              ? esp_sleep_enable_timer_wakeup(remainingUs)
+                              : wakeResult;
+
+  // Recheck after arming the active-high wake source so a BUSY transition in
+  // the setup window cannot leave the ESP asleep until the timeout.
+  if (digitalRead(EPD_BUSY_PIN) == HIGH) {
+    disableEpdLightSleepWake();
+    return;
+  }
+
+  if (gpioResult != ESP_OK || wakeResult != ESP_OK || timerResult != ESP_OK) {
+    deviceLog("EPD Light-sleep setup failed: gpio=%d wake=%d timer=%d\n",
+              gpioResult, wakeResult, timerResult);
+    disableEpdLightSleepWake();
+    waitBusyPolling(started);
+    return;
+  }
+
+  esp_err_t sleepResult = esp_light_sleep_start();
+  esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();
+  disableEpdLightSleepWake();
+
+  if (sleepResult != ESP_OK) {
+    deviceLog("EPD Light-sleep failed: %d\n", sleepResult);
+    waitBusyPolling(started);
+    return;
+  }
+
+  if (digitalRead(EPD_BUSY_PIN) == HIGH) return;
+
+  if (wakeCause == ESP_SLEEP_WAKEUP_TIMER &&
+      millis() - started >= EPD_BUSY_TIMEOUT_MS) {
+    deviceLog("EPD busy timeout\n");
+    return;
+  }
+
+  // A GPIO wake while BUSY is still low, or any unrelated wake source, is not
+  // trustworthy. Continue with the bounded reduced-clock polling fallback.
+  deviceLog("EPD Light-sleep unexpected wake: %d\n", wakeCause);
+  waitBusyPolling(started);
 }
 
 void PhotoPainterDisplay::sendCommand(uint8_t command) {
